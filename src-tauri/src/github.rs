@@ -132,6 +132,101 @@ pub async fn list_issues(repo: String, state: Option<String>, label: Option<Stri
     Ok(issues)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub state: String,
+    pub head_branch: String,
+    pub url: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub author: Option<String>,
+    /// The issue number this PR closes, extracted from body "Closes #N"
+    pub closes_issue: Option<u64>,
+}
+
+pub async fn list_open_prs(repo: String) -> Result<Vec<PullRequest>, String> {
+    let json_fields = "number,title,body,state,headRefName,url,createdAt,updatedAt,author";
+
+    let output = run_gh(&[
+        "pr", "list",
+        "-R", &repo,
+        "--state", "open",
+        "--limit", "100",
+        "--json", json_fields,
+    ])?;
+
+    let raw: Vec<serde_json::Value> = serde_json::from_str(&output)
+        .map_err(|e| format!("Failed to parse PRs JSON: {}", e))?;
+
+    let prs: Vec<PullRequest> = raw.into_iter().map(|v| {
+        let body = v["body"].as_str().map(|s| s.to_string());
+        let closes_issue = body.as_ref().and_then(|b| parse_closes_issue(b));
+
+        PullRequest {
+            number: v["number"].as_u64().unwrap_or(0),
+            title: v["title"].as_str().unwrap_or("").to_string(),
+            body,
+            state: v["state"].as_str().unwrap_or("OPEN").to_string(),
+            head_branch: v["headRefName"].as_str().unwrap_or("").to_string(),
+            url: v["url"].as_str().unwrap_or("").to_string(),
+            created_at: v["createdAt"].as_str().unwrap_or("").to_string(),
+            updated_at: v["updatedAt"].as_str().unwrap_or("").to_string(),
+            author: v["author"].as_object()
+                .and_then(|o| o["login"].as_str())
+                .map(|s| s.to_string()),
+            closes_issue,
+        }
+    }).collect();
+
+    Ok(prs)
+}
+
+/// Parse "Closes #123" or "Fixes #123" from PR body
+fn parse_closes_issue(body: &str) -> Option<u64> {
+    let body_lower = body.to_lowercase();
+    for keyword in &["closes #", "fixes #", "resolves #", "close #", "fix #", "resolve #"] {
+        if let Some(pos) = body_lower.find(keyword) {
+            let after = &body[pos + keyword.len()..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                return Some(n);
+            }
+        }
+    }
+    // Also try to extract from title pattern "Fix #123"
+    None
+}
+
+/// Parse issue number from PR title like "Fix #14: ..."
+pub fn parse_issue_from_title(title: &str) -> Option<u64> {
+    let title_lower = title.to_lowercase();
+    for keyword in &["fix #", "fixes #", "closes #", "resolve #", "resolves #", "close #", "feat #", "issue #"] {
+        if let Some(pos) = title_lower.find(keyword) {
+            let after = &title[pos + keyword.len()..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                return Some(n);
+            }
+        }
+    }
+    // Try pattern "#123" anywhere
+    for (i, c) in title.chars().enumerate() {
+        if c == '#' {
+            let after = &title[i + 1..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                if n > 0 {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn get_issue_detail(repo: String, number: u64) -> Result<Issue, String> {
     let num_str = number.to_string();

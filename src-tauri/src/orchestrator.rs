@@ -280,7 +280,8 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             .filter(|i| !has_any_run.contains(&i.number))
             .collect();
 
-        // Dispatch up to available_slots
+        // Dispatch new issues (implement stage) up to available_slots
+        let mut used_slots = 0usize;
         for issue in new_candidates.into_iter().take(available_slots) {
             let app_c = app.clone();
             let state_c = state.clone();
@@ -301,6 +302,74 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 let _ = app.emit("orchestrator-error", serde_json::json!({
                     "error": format!("Failed to launch agent for #{}: {}", issue_number, e),
                 }));
+            } else {
+                used_slots += 1;
+            }
+        }
+
+        // ---- PR DETECTION: Find open PRs that need code review ----
+        let remaining_slots = available_slots.saturating_sub(used_slots);
+        if remaining_slots > 0 {
+            if let Ok(prs) = github::list_open_prs(repo.clone()).await {
+                // Collect issue numbers that already have a review or later stage
+                let has_review_or_later: Vec<u64> = {
+                    let s = state.lock().await;
+                    s.runs.values()
+                        .filter(|r| matches!(r.stage, PipelineStage::CodeReview | PipelineStage::Testing | PipelineStage::Done))
+                        .map(|r| r.issue_number)
+                        .collect()
+                };
+
+                let mut pr_slots_used = 0usize;
+                for pr in &prs {
+                    if pr_slots_used >= remaining_slots {
+                        break;
+                    }
+
+                    // Figure out which issue this PR is for
+                    let issue_num = pr.closes_issue
+                        .or_else(|| github::parse_issue_from_title(&pr.title));
+
+                    let issue_number = match issue_num {
+                        Some(n) => n,
+                        None => continue, // Can't link to an issue, skip
+                    };
+
+                    // Skip if already has review/test/done stage
+                    if has_review_or_later.contains(&issue_number) {
+                        continue;
+                    }
+
+                    // Skip if currently active
+                    if already_working.contains(&issue_number) {
+                        continue;
+                    }
+
+                    // Skip if fully done
+                    if fully_done.contains(&issue_number) {
+                        continue;
+                    }
+
+                    // This PR needs a code review agent
+                    let pr_title = pr.title.clone();
+                    let pr_body = pr.body.clone().unwrap_or_default();
+
+                    if let Err(e) = crate::agent::launch_agent(
+                        app.clone(),
+                        state.clone(),
+                        repo.clone(),
+                        issue_number,
+                        pr_title,
+                        pr_body,
+                        PipelineStage::CodeReview,
+                    ).await {
+                        let _ = app.emit("orchestrator-error", serde_json::json!({
+                            "error": format!("Failed to launch review for PR #{}: {}", pr.number, e),
+                        }));
+                    } else {
+                        pr_slots_used += 1;
+                    }
+                }
             }
         }
 
