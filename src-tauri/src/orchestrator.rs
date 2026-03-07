@@ -63,6 +63,8 @@ pub struct RunConfig {
     pub poll_interval_secs: u64,
     pub issue_label: Option<String>,
     pub max_turns: u32,
+    pub notifications_enabled: bool,
+    pub notification_sound: bool,
 }
 
 impl Default for RunConfig {
@@ -74,6 +76,8 @@ impl Default for RunConfig {
             poll_interval_secs: 60,
             issue_label: None,
             max_turns: 1,
+            notifications_enabled: true,
+            notification_sound: true,
         }
     }
 }
@@ -240,6 +244,8 @@ pub async fn get_pipeline_report(
 }
 
 async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
+    let mut all_processed_notified = false;
+
     loop {
         let (should_stop, poll_interval, max_concurrent, label) = {
             let s = state.lock().await;
@@ -331,6 +337,26 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             let any: Vec<u64> = s.runs.values().map(|r| r.issue_number).collect();
             (working, done, any)
         };
+
+        // ---- Check if all issues are processed ----
+        {
+            let s = state.lock().await;
+            let all_done = !issues.is_empty()
+                && issues.iter().all(|issue| {
+                    already_working.contains(&issue.number)
+                        || fully_done.contains(&issue.number)
+                        || has_any_run.contains(&issue.number)
+                });
+            let no_active = active_count == 0;
+            if all_done && no_active && !all_processed_notified {
+                if s.config.notifications_enabled {
+                    crate::notification::notify_all_processed(&app, s.config.notification_sound);
+                }
+                all_processed_notified = true;
+            } else if !all_done || !no_active {
+                all_processed_notified = false;
+            }
+        }
 
         // ---- STEP 4: Dispatch issues ----
         let mut used_slots = 0usize;

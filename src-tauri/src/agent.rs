@@ -184,6 +184,9 @@ pub async fn launch_agent(
     let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
     let (cmd, args) = build_command_args(&config, &prompt);
 
+    // Update dock badge when a new agent starts
+    update_dock_badge(&state).await;
+
     let run_id_clone = run_id.clone();
     let state_clone = state.clone();
     let app_clone = app.clone();
@@ -286,6 +289,15 @@ async fn run_agent_process(
                 run.finished_at = Some(Utc::now().to_rfc3339());
                 run.logs.push(error_msg);
             }
+            if s.config.notifications_enabled {
+                crate::notification::notify_pipeline_failed(
+                    &app,
+                    issue_number,
+                    &stage_label,
+                    s.config.notification_sound,
+                );
+            }
+            drop(s);
             let _ = app.emit(
                 "agent-status-changed",
                 serde_json::json!({
@@ -294,6 +306,7 @@ async fn run_agent_process(
                     "stage": &stage_label,
                 }),
             );
+            update_dock_badge(&state).await;
             return;
         }
     };
@@ -394,6 +407,21 @@ async fn run_agent_process(
         }),
     );
 
+    // Send notification on failure
+    if !succeeded {
+        let s = state.lock().await;
+        if s.config.notifications_enabled {
+            crate::notification::notify_pipeline_failed(
+                &app,
+                issue_number,
+                &stage_label,
+                s.config.notification_sound,
+            );
+        }
+        drop(s);
+        update_dock_badge(&state).await;
+    }
+
     // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
     if succeeded {
         let next_stage = match stage {
@@ -468,6 +496,22 @@ async fn run_agent_process(
                     }),
                 );
                 let _ = app.emit("pipeline-report", &pipeline_report);
+
+                // Send notification for pipeline completion
+                {
+                    let s = state.lock().await;
+                    if s.config.notifications_enabled {
+                        crate::notification::notify_pipeline_done(
+                            &app,
+                            issue_number,
+                            &issue_title,
+                            s.config.notification_sound,
+                        );
+                    }
+                }
+
+                // Update dock badge
+                update_dock_badge(&state).await;
 
                 // Clean up the workspace clone
                 let _ = workspace::cleanup_workspace(&repo, issue_number);
@@ -547,6 +591,9 @@ fn spawn_next_stage(
         let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
         let (cmd, args) = build_command_args(&config, &prompt);
 
+        // Update dock badge for the new chained stage
+        update_dock_badge(&state).await;
+
         run_agent_process(
             app,
             state,
@@ -562,6 +609,18 @@ fn spawn_next_stage(
         )
         .await;
     });
+}
+
+async fn update_dock_badge(state: &SharedState) {
+    let s = state.lock().await;
+    let active = s
+        .runs
+        .values()
+        .filter(|r| {
+            r.status == AgentStatus::Running || r.status == AgentStatus::Preparing
+        })
+        .count();
+    crate::dock::set_badge_count(active);
 }
 
 #[tauri::command]

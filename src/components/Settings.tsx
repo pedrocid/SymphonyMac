@@ -10,6 +10,8 @@ export function Settings() {
     poll_interval_secs: 60,
     issue_label: null,
     max_turns: 1,
+    notifications_enabled: true,
+    notification_sound: true,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +165,64 @@ export function Settings() {
                 <p className="text-xs text-[#8b949e] mt-1">
                   Only process issues with this label. Leave empty for all issues.
                 </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Notifications */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-4">Notifications</h3>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm text-[#e6edf3]">Enable Notifications</label>
+                  <p className="text-xs text-[#8b949e] mt-0.5">
+                    Get notified when pipelines complete or fail
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setConfig({ ...config, notifications_enabled: !config.notifications_enabled })
+                  }
+                  className={`w-12 h-6 rounded-full transition-colors relative ${
+                    config.notifications_enabled ? "bg-[#58a6ff]" : "bg-[#30363d]"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      config.notifications_enabled ? "left-[26px]" : "left-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm text-[#e6edf3]">Notification Sound</label>
+                  <p className="text-xs text-[#8b949e] mt-0.5">
+                    Play a sound with notifications
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setConfig({ ...config, notification_sound: !config.notification_sound })
+                  }
+                  disabled={!config.notifications_enabled}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${
+                    config.notification_sound && config.notifications_enabled
+                      ? "bg-[#58a6ff]"
+                      : "bg-[#30363d]"
+                  } ${!config.notifications_enabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      config.notification_sound && config.notifications_enabled
+                        ? "left-[26px]"
+                        : "left-0.5"
+                    }`}
+                  />
+                </button>
               </div>
             </div>
           </div>
