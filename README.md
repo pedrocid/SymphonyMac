@@ -60,12 +60,18 @@ Each issue flows through four stages. On success, the next stage launches automa
 │  │  │  (Kanban board)   │  │  │  └─ config           │  │
 │  │  ├─ ActiveAgents     │  │  ├─ agent.rs            │  │
 │  │  ├─ LogViewer        │  │  │  ├─ prompt builder   │  │
-│  │  ├─ PipelineReport   │  │  │  ├─ subprocess exec  │  │
+│  │  ├─ PipelineReportView│  │  │  ├─ subprocess exec  │  │
 │  │  └─ Settings         │  │  │  └─ auto-chaining    │  │
 │  │                      │  │  ├─ github.rs           │  │
 │  │  Tailwind CSS        │  │  │  └─ gh CLI wrapper   │  │
-│  │                      │  │  └─ workspace.rs        │  │
-│  └──────────────────────┘  │     └─ clone/cleanup    │  │
+│  │                      │  │  ├─ workspace.rs        │  │
+│  │                      │  │  │  └─ clone/cleanup    │  │
+│  │                      │  │  ├─ report.rs           │  │
+│  │                      │  │  ├─ notification.rs     │  │
+│  │                      │  │  ├─ logs.rs             │  │
+│  │                      │  │  ├─ paths.rs            │  │
+│  │                      │  │  └─ dock.rs             │  │
+│  └──────────────────────┘  │                         │  │
 │                            └─────────────────────────┘  │
 │         Tauri IPC (invoke / emit)                       │
 └─────────────────────────────────────────────────────────┘
@@ -88,6 +94,11 @@ Each issue flows through four stages. On success, the next stage launches automa
 | `src-tauri/src/agent.rs` | Builds stage-specific prompts, spawns agent subprocesses (Claude CLI or Codex CLI), streams stdout/stderr as log events, handles auto-chaining to next stages and retry logic |
 | `src-tauri/src/github.rs` | Wraps the `gh` CLI for listing repos, issues, PRs, and parsing "Closes #N" references |
 | `src-tauri/src/workspace.rs` | Manages isolated workspaces under `~/symphony-workspaces/`. Clones repos, creates issue branches (`symphony/issue-N`), handles cleanup and TTL-based expiration |
+| `src-tauri/src/dock.rs` | macOS dock badge updates via Cocoa/AppKit bindings |
+| `src-tauri/src/logs.rs` | Log file management under `~/Library/Application Support/SymphonyMac/logs/` |
+| `src-tauri/src/notification.rs` | Native macOS notifications for pipeline events via Tauri notification plugin |
+| `src-tauri/src/paths.rs` | PATH resolution for locating CLI tools (`gh`, `claude`, `codex`) across system and user directories |
+| `src-tauri/src/report.rs` | Pipeline report generation — aggregates stage results, file changes, and durations |
 
 ### Frontend Components (React + TypeScript)
 
@@ -99,6 +110,7 @@ Each issue flows through four stages. On success, the next stage launches automa
 | `IssueList` | View issues for the selected repo, launch agents on individual issues |
 | `ActiveAgents` | Monitor running agent subprocesses |
 | `LogViewer` | Real-time streaming logs from agent stdout/stderr |
+| `PipelineReportView` | Visual pipeline report with per-stage results and stats |
 | `Settings` | Configure agent type, concurrency, polling interval, retries, notifications, and workspace TTL |
 
 ## Workspace Isolation
