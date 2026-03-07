@@ -52,6 +52,9 @@ pub struct AgentRun {
     pub error: Option<String>,
     pub attempt: u32,
     pub max_retries: u32,
+    pub lines_added: u32,
+    pub lines_removed: u32,
+    pub files_modified_list: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::PipelineReport>,
     /// The CLI command invoked (e.g. "claude --print ...")

@@ -226,6 +226,9 @@ pub async fn launch_agent(
         error: None,
         attempt: 1,
         max_retries,
+        lines_added: 0,
+        lines_removed: 0,
+        files_modified_list: Vec::new(),
         report: None,
         command_display: Some(command_display.clone()),
         agent_type: config.agent_type.clone(),
@@ -529,6 +532,18 @@ async fn run_agent_process(
         }),
     );
 
+    // After agent completes successfully, capture actual diff stats from git
+    if succeeded {
+        let (diff_added, diff_removed, diff_files) =
+            capture_diff_stats(&workspace_path).await;
+        let mut s = state.lock().await;
+        if let Some(run) = s.runs.get_mut(&run_id) {
+            run.lines_added = diff_added;
+            run.lines_removed = diff_removed;
+            run.files_modified_list = diff_files;
+        }
+    }
+
     // RETRY LOGIC: If the agent failed, check if we can retry
     if !succeeded {
         let (current_attempt, max_retries, retry_backoff, error_log) = {
@@ -638,6 +653,9 @@ async fn run_agent_process(
                     error: None,
                     attempt: 1,
                     max_retries: 0,
+                    lines_added: 0,
+                    lines_removed: 0,
+                    files_modified_list: Vec::new(),
                     report: Some(pipeline_report.clone()),
                     command_display: None,
                     agent_type: String::new(),
@@ -734,6 +752,9 @@ fn spawn_next_stage(
             error: None,
             attempt: 1,
             max_retries: config.max_retries,
+            lines_added: 0,
+            lines_removed: 0,
+            files_modified_list: Vec::new(),
             report: None,
             command_display: None,
             agent_type: config.agent_type.clone(),
@@ -846,6 +867,9 @@ fn spawn_retry(
             error: None,
             attempt,
             max_retries,
+            lines_added: 0,
+            lines_removed: 0,
+            files_modified_list: Vec::new(),
             report: None,
             command_display: None,
             agent_type: config.agent_type.clone(),
@@ -913,6 +937,66 @@ async fn update_dock_badge(state: &SharedState) {
         })
         .count();
     crate::dock::set_badge_count(active);
+}
+
+/// Run `git diff --stat origin/main...HEAD` in the workspace and parse the output.
+async fn capture_diff_stats(workspace_path: &std::path::Path) -> (u32, u32, Vec<String>) {
+    let output = Command::new("git")
+        .args(["diff", "--stat", "origin/main...HEAD"])
+        .current_dir(workspace_path)
+        .env("PATH", crate::paths::build_path_env())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            parse_git_diff_stat(&stdout)
+        }
+        _ => (0, 0, Vec::new()),
+    }
+}
+
+fn parse_git_diff_stat(output: &str) -> (u32, u32, Vec<String>) {
+    let mut added: u32 = 0;
+    let mut removed: u32 = 0;
+    let mut files: Vec<String> = Vec::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        // Summary line: "3 files changed, 45 insertions(+), 12 deletions(-)"
+        if trimmed.contains("changed")
+            && (trimmed.contains("insertion") || trimmed.contains("deletion"))
+        {
+            for part in trimmed.split(',') {
+                let part = part.trim();
+                if part.contains("insertion") {
+                    if let Some(num) = part.split_whitespace().next() {
+                        added = num.parse().unwrap_or(0);
+                    }
+                }
+                if part.contains("deletion") {
+                    if let Some(num) = part.split_whitespace().next() {
+                        removed = num.parse().unwrap_or(0);
+                    }
+                }
+            }
+        }
+        // File lines: " src/agent.rs | 15 +++---"
+        else if trimmed.contains(" | ") {
+            if let Some(pos) = trimmed.find(" | ") {
+                let file = trimmed[..pos].trim().to_string();
+                if !file.is_empty() {
+                    files.push(file);
+                }
+            }
+        }
+    }
+
+    (added, removed, files)
 }
 
 #[tauri::command]

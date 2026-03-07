@@ -55,8 +55,18 @@ pub fn generate_report(
             let duration_secs = calculate_duration(&run.started_at, &run.finished_at);
             total_duration += duration_secs.unwrap_or(0);
 
-            let files = extract_files_modified(&run.logs);
-            let (added, removed) = extract_diff_stats(&run.logs);
+            // Use stored diff stats from git (captured after agent success)
+            // Fall back to log parsing only if stored stats are empty
+            let files = if !run.files_modified_list.is_empty() {
+                run.files_modified_list.clone()
+            } else {
+                extract_files_modified(&run.logs)
+            };
+            let (added, removed) = if run.lines_added > 0 || run.lines_removed > 0 {
+                (run.lines_added, run.lines_removed)
+            } else {
+                extract_diff_stats(&run.logs)
+            };
             let commands = extract_commands(&run.logs);
             let summary = extract_stage_summary(stage_name, &run.logs);
 
