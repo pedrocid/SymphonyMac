@@ -224,7 +224,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             "timestamp": Utc::now().to_rfc3339(),
         }));
 
-        // Fetch open issues
+        // ---- STEP 1: Fetch issues and PRs in parallel ----
         let issues = match github::list_issues(repo.clone(), Some("open".to_string()), label.clone()).await {
             Ok(issues) => issues,
             Err(e) => {
@@ -236,140 +236,92 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             }
         };
 
-        // Count active agents
+        let open_prs = github::list_open_prs(repo.clone()).await.unwrap_or_default();
+
+        // Build a map: issue_number -> PR exists
+        let mut issues_with_pr: std::collections::HashMap<u64, &github::PullRequest> = std::collections::HashMap::new();
+        for pr in &open_prs {
+            let issue_num = pr.closes_issue
+                .or_else(|| github::parse_issue_from_title(&pr.title));
+            if let Some(n) = issue_num {
+                issues_with_pr.insert(n, pr);
+            }
+        }
+
+        // ---- STEP 2: Determine available slots ----
         let active_count = {
             let s = state.lock().await;
             s.runs.values()
                 .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
                 .count()
         };
-
         let available_slots = max_concurrent.saturating_sub(active_count);
+        if available_slots == 0 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
+            continue;
+        }
 
-        // Find issues not already being worked on (no active run for this issue)
-        let already_working: Vec<u64> = {
+        // ---- STEP 3: Filter issues that need work ----
+        let (already_working, fully_done, has_any_run) = {
             let s = state.lock().await;
-            s.runs.values()
+            let working: Vec<u64> = s.runs.values()
                 .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
                 .map(|r| r.issue_number)
-                .collect()
-        };
-
-        // Also skip issues that have completed the full pipeline
-        let fully_done: Vec<u64> = {
-            let s = state.lock().await;
-            s.runs.values()
+                .collect();
+            let done: Vec<u64> = s.runs.values()
                 .filter(|r| r.stage == PipelineStage::Done && r.status == AgentStatus::Completed)
                 .map(|r| r.issue_number)
-                .collect()
-        };
-
-        let candidates: Vec<&github::Issue> = issues.iter()
-            .filter(|i| !already_working.contains(&i.number) && !fully_done.contains(&i.number))
-            .collect();
-
-        // Also skip issues that already have a completed implement stage (they'll be auto-advanced)
-        let has_any_run: Vec<u64> = {
-            let s = state.lock().await;
-            s.runs.values()
+                .collect();
+            let any: Vec<u64> = s.runs.values()
                 .map(|r| r.issue_number)
-                .collect()
+                .collect();
+            (working, done, any)
         };
 
-        let new_candidates: Vec<&github::Issue> = candidates.into_iter()
-            .filter(|i| !has_any_run.contains(&i.number))
-            .collect();
-
-        // Dispatch new issues (implement stage) up to available_slots
+        // ---- STEP 4: Dispatch issues ----
         let mut used_slots = 0usize;
-        for issue in new_candidates.into_iter().take(available_slots) {
-            let app_c = app.clone();
-            let state_c = state.clone();
-            let repo_c = repo.clone();
-            let issue_title = issue.title.clone();
-            let issue_body = issue.body.clone().unwrap_or_default();
-            let issue_number = issue.number;
+
+        for issue in &issues {
+            if used_slots >= available_slots {
+                break;
+            }
+
+            // Skip already active, fully done, or already has a run
+            if already_working.contains(&issue.number) || fully_done.contains(&issue.number) || has_any_run.contains(&issue.number) {
+                continue;
+            }
+
+            // Decide which stage to start at
+            let (stage, title, body) = if let Some(pr) = issues_with_pr.get(&issue.number) {
+                // This issue already has a PR → start at Code Review
+                (
+                    PipelineStage::CodeReview,
+                    pr.title.clone(),
+                    pr.body.clone().unwrap_or_default(),
+                )
+            } else {
+                // No PR → start at Implement
+                (
+                    PipelineStage::Implement,
+                    issue.title.clone(),
+                    issue.body.clone().unwrap_or_default(),
+                )
+            };
 
             if let Err(e) = crate::agent::launch_agent(
-                app_c,
-                state_c,
-                repo_c,
-                issue_number,
-                issue_title,
-                issue_body,
-                PipelineStage::Implement,
+                app.clone(),
+                state.clone(),
+                repo.clone(),
+                issue.number,
+                title,
+                body,
+                stage.clone(),
             ).await {
                 let _ = app.emit("orchestrator-error", serde_json::json!({
-                    "error": format!("Failed to launch agent for #{}: {}", issue_number, e),
+                    "error": format!("Failed to launch {} agent for #{}: {}", stage, issue.number, e),
                 }));
             } else {
                 used_slots += 1;
-            }
-        }
-
-        // ---- PR DETECTION: Find open PRs that need code review ----
-        let remaining_slots = available_slots.saturating_sub(used_slots);
-        if remaining_slots > 0 {
-            if let Ok(prs) = github::list_open_prs(repo.clone()).await {
-                // Collect issue numbers that already have a review or later stage
-                let has_review_or_later: Vec<u64> = {
-                    let s = state.lock().await;
-                    s.runs.values()
-                        .filter(|r| matches!(r.stage, PipelineStage::CodeReview | PipelineStage::Testing | PipelineStage::Done))
-                        .map(|r| r.issue_number)
-                        .collect()
-                };
-
-                let mut pr_slots_used = 0usize;
-                for pr in &prs {
-                    if pr_slots_used >= remaining_slots {
-                        break;
-                    }
-
-                    // Figure out which issue this PR is for
-                    let issue_num = pr.closes_issue
-                        .or_else(|| github::parse_issue_from_title(&pr.title));
-
-                    let issue_number = match issue_num {
-                        Some(n) => n,
-                        None => continue, // Can't link to an issue, skip
-                    };
-
-                    // Skip if already has review/test/done stage
-                    if has_review_or_later.contains(&issue_number) {
-                        continue;
-                    }
-
-                    // Skip if currently active
-                    if already_working.contains(&issue_number) {
-                        continue;
-                    }
-
-                    // Skip if fully done
-                    if fully_done.contains(&issue_number) {
-                        continue;
-                    }
-
-                    // This PR needs a code review agent
-                    let pr_title = pr.title.clone();
-                    let pr_body = pr.body.clone().unwrap_or_default();
-
-                    if let Err(e) = crate::agent::launch_agent(
-                        app.clone(),
-                        state.clone(),
-                        repo.clone(),
-                        issue_number,
-                        pr_title,
-                        pr_body,
-                        PipelineStage::CodeReview,
-                    ).await {
-                        let _ = app.emit("orchestrator-error", serde_json::json!({
-                            "error": format!("Failed to launch review for PR #{}: {}", pr.number, e),
-                        }));
-                    } else {
-                        pr_slots_used += 1;
-                    }
-                }
             }
         }
 
