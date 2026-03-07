@@ -2,6 +2,7 @@ mod agent;
 mod github;
 mod orchestrator;
 mod paths;
+mod report;
 mod workspace;
 
 use orchestrator::OrchestratorState;
@@ -30,6 +31,7 @@ pub fn run() {
             orchestrator::get_agent_logs,
             agent::start_single_issue,
             agent::stop_agent,
+            orchestrator::get_pipeline_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

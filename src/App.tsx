@@ -6,6 +6,7 @@ import { Dashboard } from "./components/Dashboard";
 import { ActiveAgents } from "./components/ActiveAgents";
 import { Settings } from "./components/Settings";
 import { LogViewer } from "./components/LogViewer";
+import { PipelineReportView } from "./components/PipelineReportView";
 
 export type View = "repos" | "issues" | "dashboard" | "agents" | "settings";
 
@@ -22,6 +23,7 @@ function App() {
   const [view, setView] = useState<View>("repos");
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [reportRunId, setReportRunId] = useState<string | null>(null);
 
   return (
     <div className="flex h-screen bg-[#0d1117]">
@@ -94,7 +96,8 @@ function App() {
         )}
         {view === "dashboard" && (
           <Dashboard
-            onViewLogs={(runId) => setSelectedRunId(runId)}
+            onViewLogs={(runId) => { setReportRunId(null); setSelectedRunId(runId); }}
+            onViewReport={(runId) => { setSelectedRunId(null); setReportRunId(runId); }}
           />
         )}
         {view === "agents" && (
@@ -104,6 +107,17 @@ function App() {
         )}
         {view === "settings" && <Settings />}
       </div>
+
+      {/* Report panel (slides in) */}
+      {reportRunId && (
+        <div className="w-[500px] bg-[#161b22] border-l border-[#30363d] flex flex-col">
+          <PipelineReportView
+            runId={reportRunId}
+            onClose={() => setReportRunId(null)}
+            onViewLogs={(runId) => { setReportRunId(null); setSelectedRunId(runId); }}
+          />
+        </div>
+      )}
 
       {/* Log panel (slides in) */}
       {selectedRunId && (

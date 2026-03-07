@@ -51,6 +51,8 @@ pub struct AgentRun {
     pub workspace_path: String,
     pub error: Option<String>,
     pub attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::report::PipelineReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +221,19 @@ pub async fn get_agent_logs(
     let s = state.lock().await;
     if let Some(run) = s.runs.get(&run_id) {
         Ok(run.logs.clone())
+    } else {
+        Err("Run not found".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn get_pipeline_report(
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+) -> Result<Option<crate::report::PipelineReport>, String> {
+    let s = state.lock().await;
+    if let Some(run) = s.runs.get(&run_id) {
+        Ok(run.report.clone())
     } else {
         Err("Run not found".to_string())
     }
