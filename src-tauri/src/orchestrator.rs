@@ -51,6 +51,7 @@ pub struct AgentRun {
     pub workspace_path: String,
     pub error: Option<String>,
     pub attempt: u32,
+    pub max_retries: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::PipelineReport>,
 }
@@ -65,6 +66,11 @@ pub struct RunConfig {
     pub max_turns: u32,
     pub notifications_enabled: bool,
     pub notification_sound: bool,
+    pub max_retries: u32,
+    pub retry_backoff_secs: u64,
+    pub cleanup_on_failure: bool,
+    pub cleanup_on_stop: bool,
+    pub workspace_ttl_days: u32,
 }
 
 impl Default for RunConfig {
@@ -78,6 +84,11 @@ impl Default for RunConfig {
             max_turns: 1,
             notifications_enabled: true,
             notification_sound: true,
+            max_retries: 1,
+            retry_backoff_secs: 10,
+            cleanup_on_failure: false,
+            cleanup_on_stop: false,
+            workspace_ttl_days: 7,
         }
     }
 }

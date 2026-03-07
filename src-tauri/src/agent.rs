@@ -152,6 +152,8 @@ pub async fn launch_agent(
 
     let stage_label = stage.to_string();
 
+    let max_retries = config.max_retries;
+
     let run = AgentRun {
         id: run_id.clone(),
         repo: repo.clone(),
@@ -165,6 +167,7 @@ pub async fn launch_agent(
         workspace_path: workspace_path.to_string_lossy().to_string(),
         error: None,
         attempt: 1,
+        max_retries,
         report: None,
     };
 
@@ -442,8 +445,38 @@ async fn run_agent_process(
         }),
     );
 
-    // Send notification on failure
+    // RETRY LOGIC: If the agent failed, check if we can retry
     if !succeeded {
+        let (current_attempt, max_retries, retry_backoff, error_log) = {
+            let s = state.lock().await;
+            let run = s.runs.get(&run_id);
+            let attempt = run.map(|r| r.attempt).unwrap_or(1);
+            let max_r = run.map(|r| r.max_retries).unwrap_or(0);
+            let backoff = s.config.retry_backoff_secs;
+            let err = run.and_then(|r| r.error.clone()).unwrap_or_default();
+            (attempt, max_r, backoff, err)
+        };
+
+        if current_attempt <= max_retries {
+            // We can retry - spawn a retry attempt
+            spawn_retry(
+                app.clone(),
+                state.clone(),
+                repo,
+                issue_number,
+                issue_title,
+                issue_body,
+                stage,
+                workspace_path,
+                current_attempt + 1,
+                max_retries,
+                retry_backoff,
+                error_log,
+            );
+            return;
+        }
+
+        // No more retries - notify failure
         let s = state.lock().await;
         if s.config.notifications_enabled {
             crate::notification::notify_pipeline_failed(
@@ -453,8 +486,12 @@ async fn run_agent_process(
                 s.config.notification_sound,
             );
         }
+        let should_cleanup = s.config.cleanup_on_failure;
         drop(s);
         update_dock_badge(&state).await;
+        if should_cleanup {
+            let _ = workspace::cleanup_workspace(&repo, issue_number);
+        }
     }
 
     // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
@@ -516,6 +553,7 @@ async fn run_agent_process(
                     workspace_path: workspace_path.to_string_lossy().to_string(),
                     error: None,
                     attempt: 1,
+                    max_retries: 0,
                     report: Some(pipeline_report.clone()),
                 };
                 {
@@ -606,6 +644,7 @@ fn spawn_next_stage(
             workspace_path: workspace_path.to_string_lossy().to_string(),
             error: None,
             attempt: 1,
+            max_retries: config.max_retries,
             report: None,
         };
 
@@ -658,6 +697,96 @@ fn spawn_next_stage(
     });
 }
 
+/// Spawn a retry of the same pipeline stage after a backoff delay.
+fn spawn_retry(
+    app: AppHandle,
+    state: SharedState,
+    repo: String,
+    issue_number: u64,
+    issue_title: String,
+    issue_body: String,
+    stage: PipelineStage,
+    workspace_path: std::path::PathBuf,
+    attempt: u32,
+    max_retries: u32,
+    backoff_secs: u64,
+    previous_error: String,
+) {
+    let stage_label = stage.to_string();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
+
+        let run_id = Uuid::new_v4().to_string();
+        let config = {
+            let s = state.lock().await;
+            s.config.clone()
+        };
+
+        let run = AgentRun {
+            id: run_id.clone(),
+            repo: repo.clone(),
+            issue_number,
+            issue_title: issue_title.clone(),
+            status: AgentStatus::Preparing,
+            stage: stage.clone(),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: None,
+            logs: vec![format!(
+                "Retry attempt {}/{} (previous error: {})",
+                attempt,
+                max_retries + 1,
+                &previous_error
+            )],
+            workspace_path: workspace_path.to_string_lossy().to_string(),
+            error: None,
+            attempt,
+            max_retries,
+            report: None,
+        };
+
+        {
+            let mut s = state.lock().await;
+            s.runs.insert(run_id.clone(), run);
+        }
+
+        let _ = app.emit(
+            "agent-status-changed",
+            serde_json::json!({
+                "run_id": &run_id,
+                "status": "preparing",
+                "stage": &stage_label,
+                "attempt": attempt,
+                "max_retries": max_retries + 1,
+            }),
+        );
+
+        let base_prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
+        let prompt = format!(
+            "{}\n\nIMPORTANT: Previous attempt failed with: {}\nFix the issues and try again.",
+            base_prompt, previous_error
+        );
+        let (cmd, args) = build_command_args(&config, &prompt);
+
+        update_dock_badge(&state).await;
+
+        run_agent_process(
+            app,
+            state,
+            run_id,
+            cmd,
+            args,
+            workspace_path,
+            stage,
+            repo,
+            issue_number,
+            issue_title,
+            issue_body,
+        )
+        .await;
+    });
+}
+
 async fn update_dock_badge(state: &SharedState) {
     let s = state.lock().await;
     let active = s
@@ -681,10 +810,14 @@ pub async fn stop_agent(
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }
+        let mut repo_issue: Option<(String, u64)> = None;
         if let Some(run) = s.runs.get_mut(&run_id) {
             run.status = AgentStatus::Stopped;
             run.finished_at = Some(Utc::now().to_rfc3339());
+            repo_issue = Some((run.repo.clone(), run.issue_number));
         }
+        let should_cleanup = s.config.cleanup_on_stop;
+        drop(s);
         let _ = app.emit(
             "agent-status-changed",
             serde_json::json!({
@@ -692,6 +825,11 @@ pub async fn stop_agent(
                 "status": "stopped",
             }),
         );
+        if should_cleanup {
+            if let Some((repo, issue_number)) = repo_issue {
+                let _ = workspace::cleanup_workspace(&repo, issue_number);
+            }
+        }
         Ok(())
     } else {
         Err("Agent not found or already finished".to_string())
