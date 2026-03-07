@@ -1,4 +1,5 @@
 use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig};
+use crate::report;
 use crate::workspace;
 use crate::SharedState;
 use chrono::Utc;
@@ -163,6 +164,7 @@ pub async fn launch_agent(
         workspace_path: workspace_path.to_string_lossy().to_string(),
         error: None,
         attempt: 1,
+        report: None,
     };
 
     {
@@ -399,12 +401,14 @@ async fn run_agent_process(
             PipelineStage::CodeReview => Some(PipelineStage::Testing),
             PipelineStage::Testing => Some(PipelineStage::Merge),
             PipelineStage::Merge => {
-                // Merge passed → mark as Done with aggregated logs from all stages
+                // Merge passed → mark as Done with aggregated logs and enriched report
                 let done_id = Uuid::new_v4().to_string();
-                let aggregated_logs = {
+                let (aggregated_logs, pipeline_report) = {
                     let s = state.lock().await;
                     let stage_order = ["implement", "code_review", "testing", "merge"];
                     let mut all_logs: Vec<String> = Vec::new();
+                    let mut stage_runs_for_report: Vec<&AgentRun> = Vec::new();
+
                     for stage_name in &stage_order {
                         let stage_runs: Vec<&AgentRun> = s
                             .runs
@@ -422,11 +426,20 @@ async fn run_agent_process(
                             ));
                             all_logs.extend(run.logs.iter().cloned());
                             all_logs.push(String::new());
+                            stage_runs_for_report.push(run);
                         }
                     }
                     all_logs.push("═══ PIPELINE COMPLETED ═══".to_string());
-                    all_logs
+
+                    let report = report::generate_report(
+                        issue_number,
+                        &issue_title,
+                        &repo,
+                        stage_runs_for_report,
+                    );
+                    (all_logs, report)
                 };
+
                 let done_run = AgentRun {
                     id: done_id.clone(),
                     repo: repo.clone(),
@@ -440,6 +453,7 @@ async fn run_agent_process(
                     workspace_path: workspace_path.to_string_lossy().to_string(),
                     error: None,
                     attempt: 1,
+                    report: Some(pipeline_report.clone()),
                 };
                 {
                     let mut s = state.lock().await;
@@ -453,6 +467,7 @@ async fn run_agent_process(
                         "stage": "done",
                     }),
                 );
+                let _ = app.emit("pipeline-report", &pipeline_report);
 
                 // Clean up the workspace clone
                 let _ = workspace::cleanup_workspace(&repo, issue_number);
@@ -512,6 +527,7 @@ fn spawn_next_stage(
             workspace_path: workspace_path.to_string_lossy().to_string(),
             error: None,
             attempt: 1,
+            report: None,
         };
 
         {

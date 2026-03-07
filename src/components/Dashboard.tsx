@@ -60,7 +60,7 @@ const STAGE_LABELS: Record<string, string> = {
   merge: "Merging",
 };
 
-export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void }) {
+export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: string) => void; onViewReport?: (runId: string) => void }) {
   const [status, setStatus] = useState<OrchestratorStatus | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -344,6 +344,12 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
                     <div className="flex items-center justify-between text-xs text-[#484f58]">
                       <span>{card.updated}</span>
                       <div className="flex items-center gap-2">
+                        {card.runId && card.runStage === "done" && onViewReport && (
+                          <button onClick={(e) => { e.stopPropagation(); onViewReport(card.runId!); }}
+                            className="text-[#3fb950] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
+                            Report
+                          </button>
+                        )}
                         {card.runId && (
                           <button onClick={(e) => { e.stopPropagation(); onViewLogs(card.runId!); }}
                             className="text-[#58a6ff] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
