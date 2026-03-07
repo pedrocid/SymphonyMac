@@ -12,6 +12,8 @@ export function Settings() {
     max_turns: 1,
     notifications_enabled: true,
     notification_sound: true,
+    max_retries: 1,
+    retry_backoff_secs: 10,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +146,40 @@ export function Settings() {
                   }
                   className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">Max Retries per Stage</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={config.max_retries}
+                  onChange={(e) =>
+                    setConfig({ ...config, max_retries: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Number of automatic retries when a pipeline stage fails. Set to 0 to disable.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">Retry Backoff (seconds)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={300}
+                  value={config.retry_backoff_secs}
+                  onChange={(e) =>
+                    setConfig({ ...config, retry_backoff_secs: parseInt(e.target.value) || 10 })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Delay in seconds before retrying a failed stage.
+                </p>
               </div>
 
               <div>

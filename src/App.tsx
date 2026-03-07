@@ -19,6 +19,8 @@ export interface RunConfig {
   max_turns: number;
   notifications_enabled: boolean;
   notification_sound: boolean;
+  max_retries: number;
+  retry_backoff_secs: number;
 }
 
 function App() {
