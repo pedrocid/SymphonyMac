@@ -415,17 +415,23 @@ async fn run_agent_process(
         final_status = if succeeded { "completed" } else { "failed" };
     }
 
-    // Update metadata on disk with final status
-    logs::save_meta(&logs::LogMeta {
-        run_id: run_id.clone(),
-        repo: repo.clone(),
-        issue_number,
-        issue_title: issue_title.clone(),
-        stage: stage_label.clone(),
-        started_at: String::new(), // will be overwritten from existing
-        finished_at: Some(Utc::now().to_rfc3339()),
-        status: final_status.to_string(),
-    });
+    // Update metadata on disk with final status, preserving the original started_at
+    if let Some(mut meta) = logs::load_meta(&run_id) {
+        meta.finished_at = Some(Utc::now().to_rfc3339());
+        meta.status = final_status.to_string();
+        logs::save_meta(&meta);
+    } else {
+        logs::save_meta(&logs::LogMeta {
+            run_id: run_id.clone(),
+            repo: repo.clone(),
+            issue_number,
+            issue_title: issue_title.clone(),
+            stage: stage_label.clone(),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: Some(Utc::now().to_rfc3339()),
+            status: final_status.to_string(),
+        });
+    }
 
     let _ = app.emit(
         "agent-status-changed",
