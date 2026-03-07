@@ -118,6 +118,14 @@ fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>)
             if config.auto_approve {
                 args.push("--full-auto".to_string());
             }
+            // Allow Codex sandbox to read gh auth config
+            if let Some(home) = dirs::home_dir() {
+                let gh_config = home.join(".config/gh");
+                if gh_config.exists() {
+                    args.push("--add-dir".to_string());
+                    args.push(gh_config.to_string_lossy().to_string());
+                }
+            }
             args.push(prompt.to_string());
             (crate::paths::resolve("codex"), args)
         }
@@ -283,7 +291,17 @@ async fn run_agent_process(
         }),
     );
 
-    let result = Command::new(&cmd)
+    // Obtain GH_TOKEN so agents (especially Codex in sandbox) can access GitHub API
+    let gh_token = std::process::Command::new(crate::paths::resolve("gh"))
+        .args(["auth", "token"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| !t.is_empty());
+
+    let mut command = Command::new(&cmd);
+    command
         .args(&args)
         .current_dir(&workspace_path)
         .env("PATH", &path_env)
@@ -291,8 +309,13 @@ async fn run_agent_process(
         .env_remove("CLAUDE_CODE_SESSION")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdin(Stdio::null())
-        .spawn();
+        .stdin(Stdio::null());
+
+    if let Some(ref token) = gh_token {
+        command.env("GH_TOKEN", token);
+    }
+
+    let result = command.spawn();
 
     let mut child = match result {
         Ok(c) => c,
