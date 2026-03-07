@@ -15,6 +15,26 @@ pub enum AgentStatus {
     Stopped,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStage {
+    Implement,
+    CodeReview,
+    Testing,
+    Done,
+}
+
+impl std::fmt::Display for PipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PipelineStage::Implement => write!(f, "implement"),
+            PipelineStage::CodeReview => write!(f, "code_review"),
+            PipelineStage::Testing => write!(f, "testing"),
+            PipelineStage::Done => write!(f, "done"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRun {
     pub id: String,
@@ -22,6 +42,7 @@ pub struct AgentRun {
     pub issue_number: u64,
     pub issue_title: String,
     pub status: AgentStatus,
+    pub stage: PipelineStage,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub logs: Vec<String>,
@@ -84,13 +105,20 @@ impl OrchestratorState {
             stop_flag: false,
         }
     }
+
+    /// Get the latest run for a given issue number
+    pub fn latest_run_for_issue(&self, issue_number: u64) -> Option<&AgentRun> {
+        self.runs.values()
+            .filter(|r| r.issue_number == issue_number)
+            .max_by_key(|r| r.started_at.clone())
+    }
 }
 
 #[tauri::command]
 pub async fn get_status(state: tauri::State<'_, SharedState>) -> Result<OrchestratorStatus, String> {
     let s = state.lock().await;
     let runs: Vec<AgentRun> = s.runs.values().cloned().collect();
-    let total_completed = runs.iter().filter(|r| r.status == AgentStatus::Completed).count();
+    let total_completed = runs.iter().filter(|r| r.stage == PipelineStage::Done).count();
     let total_failed = runs.iter().filter(|r| r.status == AgentStatus::Failed).count();
     let active_count = runs.iter().filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing).count();
 
@@ -218,7 +246,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
 
         let available_slots = max_concurrent.saturating_sub(active_count);
 
-        // Find issues not already being worked on
+        // Find issues not already being worked on (no active run for this issue)
         let already_working: Vec<u64> = {
             let s = state.lock().await;
             s.runs.values()
@@ -227,12 +255,33 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 .collect()
         };
 
+        // Also skip issues that have completed the full pipeline
+        let fully_done: Vec<u64> = {
+            let s = state.lock().await;
+            s.runs.values()
+                .filter(|r| r.stage == PipelineStage::Done && r.status == AgentStatus::Completed)
+                .map(|r| r.issue_number)
+                .collect()
+        };
+
         let candidates: Vec<&github::Issue> = issues.iter()
-            .filter(|i| !already_working.contains(&i.number))
+            .filter(|i| !already_working.contains(&i.number) && !fully_done.contains(&i.number))
+            .collect();
+
+        // Also skip issues that already have a completed implement stage (they'll be auto-advanced)
+        let has_any_run: Vec<u64> = {
+            let s = state.lock().await;
+            s.runs.values()
+                .map(|r| r.issue_number)
+                .collect()
+        };
+
+        let new_candidates: Vec<&github::Issue> = candidates.into_iter()
+            .filter(|i| !has_any_run.contains(&i.number))
             .collect();
 
         // Dispatch up to available_slots
-        for issue in candidates.into_iter().take(available_slots) {
+        for issue in new_candidates.into_iter().take(available_slots) {
             let app_c = app.clone();
             let state_c = state.clone();
             let repo_c = repo.clone();
@@ -247,6 +296,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 issue_number,
                 issue_title,
                 issue_body,
+                PipelineStage::Implement,
             ).await {
                 let _ = app.emit("orchestrator-error", serde_json::json!({
                     "error": format!("Failed to launch agent for #{}: {}", issue_number, e),

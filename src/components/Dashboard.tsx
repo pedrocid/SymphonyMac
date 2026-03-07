@@ -8,6 +8,7 @@ interface AgentRun {
   issue_number: number;
   issue_title: string;
   status: string;
+  stage: string;
   started_at: string;
   finished_at: string | null;
   workspace_path: string;
@@ -38,14 +39,6 @@ interface OrchestratorStatus {
   active_count: number;
 }
 
-type Column = {
-  id: string;
-  title: string;
-  color: string;
-  dotColor: string;
-  items: KanbanCard[];
-};
-
 type KanbanCard = {
   id: string;
   number: number;
@@ -55,8 +48,15 @@ type KanbanCard = {
   updated: string;
   runId?: string;
   runStatus?: string;
+  runStage?: string;
   error?: string | null;
   elapsed?: string;
+};
+
+const STAGE_LABELS: Record<string, string> = {
+  implement: "Implementing",
+  code_review: "Reviewing",
+  testing: "Testing",
 };
 
 export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void }) {
@@ -66,13 +66,9 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
 
   useEffect(() => {
     loadStatus();
-    const interval = setInterval(() => {
-      loadStatus();
-    }, 3000);
-
+    const interval = setInterval(loadStatus, 3000);
     const unlistenStatus = listen("agent-status-changed", () => loadStatus());
     const unlistenOrch = listen("orchestrator-status", () => loadStatus());
-
     return () => {
       clearInterval(interval);
       unlistenStatus.then((f) => f());
@@ -87,9 +83,7 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
       if (result.repo) {
         try {
           const allIssues = await invoke<Issue[]>("list_issues", {
-            repo: result.repo,
-            state: "all",
-            label: null,
+            repo: result.repo, state: "all", label: null,
           });
           setIssues(allIssues);
         } catch (_) {}
@@ -100,32 +94,22 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
   }
 
   async function stopOrchestrator() {
-    try {
-      await invoke("stop_orchestrator");
-      loadStatus();
-    } catch (_) {}
+    try { await invoke("stop_orchestrator"); loadStatus(); } catch (_) {}
   }
 
   async function stopAgent(runId: string) {
-    try {
-      await invoke("stop_agent", { runId });
-      loadStatus();
-    } catch (_) {}
+    try { await invoke("stop_agent", { runId }); loadStatus(); } catch (_) {}
   }
 
   async function launchIssue(issue: Issue) {
     if (!status?.repo) return;
     try {
       await invoke("start_single_issue", {
-        repo: status.repo,
-        issueNumber: issue.number,
-        issueTitle: issue.title,
-        issueBody: issue.body,
+        repo: status.repo, issueNumber: issue.number,
+        issueTitle: issue.title, issueBody: issue.body,
       });
       loadStatus();
-    } catch (e) {
-      setError(String(e));
-    }
+    } catch (e) { setError(String(e)); }
   }
 
   function formatElapsed(startedAt: string, finishedAt: string | null): string {
@@ -141,103 +125,118 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
 
   function formatDate(dateStr: string): string {
     const d = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
+    const diffMs = Date.now() - d.getTime();
     const diffMins = Math.floor(diffMs / 60000);
     if (diffMins < 1) return "Just now";
     if (diffMins < 60) return `${diffMins}m ago`;
     const diffHours = Math.floor(diffMins / 60);
     if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
+    return `${Math.floor(diffHours / 24)}d ago`;
   }
 
   if (!status) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-[#8b949e]">
-        Loading dashboard...
-      </div>
-    );
+    return <div className="flex-1 flex items-center justify-center text-[#8b949e]">Loading...</div>;
   }
 
-  // Build run lookup by issue number
-  const runsByIssue = new Map<number, AgentRun>();
+  // For each issue, find the latest run (by started_at)
+  const latestRunByIssue = new Map<number, AgentRun>();
+  // Also collect all runs per issue to find the "best" stage
+  const allRunsByIssue = new Map<number, AgentRun[]>();
   for (const run of status.runs) {
-    const existing = runsByIssue.get(run.issue_number);
-    if (!existing || new Date(run.started_at) > new Date(existing.started_at)) {
-      runsByIssue.set(run.issue_number, run);
+    const existing = allRunsByIssue.get(run.issue_number) || [];
+    existing.push(run);
+    allRunsByIssue.set(run.issue_number, existing);
+
+    const current = latestRunByIssue.get(run.issue_number);
+    if (!current || new Date(run.started_at) > new Date(current.started_at)) {
+      latestRunByIssue.set(run.issue_number, run);
     }
   }
 
-  // Categorize issues into columns
+  // Determine which column each issue belongs to based on its pipeline state
   const openCards: KanbanCard[] = [];
-  const inProgressCards: KanbanCard[] = [];
+  const implementCards: KanbanCard[] = [];
   const reviewCards: KanbanCard[] = [];
+  const testingCards: KanbanCard[] = [];
   const doneCards: KanbanCard[] = [];
   const failedCards: KanbanCard[] = [];
 
-  // Process issues from GitHub
-  for (const issue of issues) {
-    const run = runsByIssue.get(issue.number);
-    const card: KanbanCard = {
-      id: `issue-${issue.number}`,
-      number: issue.number,
-      title: issue.title,
-      labels: issue.labels,
-      assignee: issue.assignee,
-      updated: formatDate(issue.updated_at),
+  function makeCard(issue: Issue | null, run: AgentRun | null): KanbanCard {
+    return {
+      id: run?.id || `issue-${issue?.number}`,
+      number: issue?.number || run?.issue_number || 0,
+      title: issue?.title || run?.issue_title || "",
+      labels: issue?.labels || [],
+      assignee: issue?.assignee || null,
+      updated: formatDate(run?.started_at || issue?.updated_at || ""),
       runId: run?.id,
       runStatus: run?.status,
+      runStage: run?.stage,
       error: run?.error,
       elapsed: run ? formatElapsed(run.started_at, run.finished_at) : undefined,
     };
+  }
 
-    if (run) {
-      if (run.status === "running" || run.status === "preparing") {
-        inProgressCards.push(card);
-      } else if (run.status === "completed") {
-        reviewCards.push(card);
-      } else if (run.status === "failed" || run.status === "stopped") {
-        failedCards.push(card);
-      }
-    } else if (issue.state === "OPEN") {
-      openCards.push(card);
-    } else {
+  // Track which issues we've processed
+  const processedIssues = new Set<number>();
+
+  // First: process all issues that have runs
+  for (const [issueNum, runs] of allRunsByIssue.entries()) {
+    processedIssues.add(issueNum);
+    const issue = issues.find((i) => i.number === issueNum) || null;
+    const latestRun = latestRunByIssue.get(issueNum)!;
+    const card = makeCard(issue, latestRun);
+
+    // Check if there's a "done" stage
+    const hasDone = runs.some((r) => r.stage === "done" && r.status === "completed");
+    if (hasDone) {
       doneCards.push(card);
+      continue;
     }
-  }
 
-  // Also add runs that don't have a matching issue (shouldn't happen, but safe)
-  for (const run of status.runs) {
-    if (!issues.find((i) => i.number === run.issue_number)) {
-      const card: KanbanCard = {
-        id: run.id,
-        number: run.issue_number,
-        title: run.issue_title,
-        labels: [],
-        assignee: null,
-        updated: formatDate(run.started_at),
-        runId: run.id,
-        runStatus: run.status,
-        error: run.error,
-        elapsed: formatElapsed(run.started_at, run.finished_at),
-      };
-      if (run.status === "running" || run.status === "preparing") {
-        inProgressCards.push(card);
-      } else if (run.status === "completed") {
-        reviewCards.push(card);
-      } else {
-        failedCards.push(card);
+    // Check if latest run failed
+    if (latestRun.status === "failed" || latestRun.status === "stopped") {
+      failedCards.push(card);
+      continue;
+    }
+
+    // Active or completed stages
+    if (latestRun.status === "running" || latestRun.status === "preparing") {
+      // Currently active - put in the stage column
+      switch (latestRun.stage) {
+        case "implement": implementCards.push(card); break;
+        case "code_review": reviewCards.push(card); break;
+        case "testing": testingCards.push(card); break;
+        default: implementCards.push(card); break;
+      }
+    } else if (latestRun.status === "completed") {
+      // Completed but next stage hasn't started yet (brief transition)
+      switch (latestRun.stage) {
+        case "implement": reviewCards.push({ ...card, runStatus: "waiting" }); break;
+        case "code_review": testingCards.push({ ...card, runStatus: "waiting" }); break;
+        case "testing": doneCards.push(card); break;
+        default: doneCards.push(card); break;
       }
     }
   }
 
-  const columns: Column[] = [
-    { id: "open", title: "Open", color: "#8b949e", dotColor: "#8b949e", items: openCards },
-    { id: "in-progress", title: "In Progress", color: "#d29922", dotColor: "#d29922", items: inProgressCards },
-    { id: "review", title: "Human Review", color: "#bc8cff", dotColor: "#bc8cff", items: reviewCards },
-    { id: "done", title: "Done", color: "#3fb950", dotColor: "#3fb950", items: doneCards },
-    { id: "failed", title: "Failed", color: "#f85149", dotColor: "#f85149", items: failedCards },
+  // Then: issues without any runs
+  for (const issue of issues) {
+    if (processedIssues.has(issue.number)) continue;
+    if (issue.state === "OPEN") {
+      openCards.push(makeCard(issue, null));
+    } else {
+      doneCards.push(makeCard(issue, null));
+    }
+  }
+
+  const columns = [
+    { id: "open", title: "Open", color: "#8b949e", items: openCards },
+    { id: "implement", title: "In Progress", color: "#d29922", items: implementCards },
+    { id: "review", title: "Code Review", color: "#bc8cff", items: reviewCards },
+    { id: "testing", title: "Testing", color: "#58a6ff", items: testingCards },
+    { id: "done", title: "Done", color: "#3fb950", items: doneCards },
+    { id: "failed", title: "Failed", color: "#f85149", items: failedCards },
   ];
 
   return (
@@ -245,12 +244,8 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
       {/* Top bar */}
       <div className="px-6 py-4 border-b border-[#30363d] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <h2 className="text-lg font-semibold text-[#e6edf3]">
-            {status.repo || "Symphony"}
-          </h2>
-          <span className="text-xs text-[#8b949e] border border-[#30363d] rounded px-2 py-0.5">
-            Board
-          </span>
+          <h2 className="text-lg font-semibold text-[#e6edf3]">{status.repo || "Symphony"}</h2>
+          <span className="text-xs text-[#8b949e] border border-[#30363d] rounded px-2 py-0.5">Board</span>
         </div>
         <div className="flex items-center gap-3">
           {status.is_running ? (
@@ -259,10 +254,8 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
                 <span className="w-2 h-2 bg-[#3fb950] rounded-full animate-pulse" />
                 Auto-pilot
               </span>
-              <button
-                onClick={stopOrchestrator}
-                className="px-3 py-1.5 bg-[#21262d] text-[#f85149] border border-[#30363d] rounded-md text-sm hover:bg-[#30363d] transition-colors"
-              >
+              <button onClick={stopOrchestrator}
+                className="px-3 py-1.5 bg-[#21262d] text-[#f85149] border border-[#30363d] rounded-md text-sm hover:bg-[#30363d] transition-colors">
                 Stop
               </button>
             </>
@@ -282,23 +275,17 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-6">
         <div className="flex gap-4 h-full min-w-max">
           {columns.map((col) => (
-            <div
-              key={col.id}
-              className="w-72 flex flex-col bg-[#0d1117] rounded-lg shrink-0"
-            >
+            <div key={col.id} className="w-72 flex flex-col bg-[#0d1117] rounded-lg shrink-0">
               {/* Column header */}
               <div className="flex items-center justify-between px-3 py-3 shrink-0">
                 <div className="flex items-center gap-2">
-                  <span
-                    className="w-3 h-3 rounded-full"
-                    style={{ backgroundColor: col.dotColor }}
-                  />
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: col.color }} />
                   <span className="text-sm font-medium text-[#e6edf3]">{col.title}</span>
                   <span className="text-xs text-[#484f58] ml-1">{col.items.length}</span>
                 </div>
               </div>
 
-              {/* Column cards */}
+              {/* Cards */}
               <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-2">
                 {col.items.map((card) => (
                   <div
@@ -306,46 +293,42 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
                     className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 hover:border-[#484f58] transition-colors cursor-pointer group"
                     onClick={() => card.runId && onViewLogs(card.runId)}
                   >
-                    {/* Issue number */}
-                    <div className="text-xs text-[#484f58] mb-1">
-                      #{card.number}
-                    </div>
+                    <div className="text-xs text-[#484f58] mb-1">#{card.number}</div>
+                    <div className="text-sm text-[#e6edf3] font-medium mb-2 leading-snug">{card.title}</div>
 
-                    {/* Title */}
-                    <div className="text-sm text-[#e6edf3] font-medium mb-2 leading-snug">
-                      {card.title}
-                    </div>
-
-                    {/* Status indicator for running */}
+                    {/* Running indicator with stage */}
                     {card.runStatus === "running" && (
                       <div className="flex items-center gap-1.5 mb-2">
-                        <span className="w-1.5 h-1.5 bg-[#d29922] rounded-full animate-pulse" />
-                        <span className="text-xs text-[#d29922]">{card.elapsed}</span>
+                        <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: col.color }} />
+                        <span className="text-xs" style={{ color: col.color }}>
+                          {STAGE_LABELS[card.runStage || ""] || card.runStage} - {card.elapsed}
+                        </span>
                       </div>
                     )}
                     {card.runStatus === "preparing" && (
                       <div className="flex items-center gap-1.5 mb-2">
-                        <span className="w-1.5 h-1.5 bg-[#d29922] rounded-full animate-pulse" />
-                        <span className="text-xs text-[#d29922]">Preparing...</span>
+                        <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: col.color }} />
+                        <span className="text-xs" style={{ color: col.color }}>Preparing...</span>
+                      </div>
+                    )}
+                    {card.runStatus === "waiting" && (
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className="w-1.5 h-1.5 bg-[#484f58] rounded-full animate-pulse" />
+                        <span className="text-xs text-[#484f58]">Starting next stage...</span>
                       </div>
                     )}
 
                     {/* Error */}
                     {card.error && (
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <span className="text-xs">&#x1F6D1;</span>
-                        <span className="text-xs text-[#f85149] truncate">{card.error}</span>
-                      </div>
+                      <div className="text-xs text-[#f85149] truncate mb-2">{card.error}</div>
                     )}
 
                     {/* Labels */}
                     {card.labels.length > 0 && (
                       <div className="flex flex-wrap gap-1 mb-2">
                         {card.labels.map((label) => (
-                          <span
-                            key={label}
-                            className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#21262d] text-[#8b949e] border border-[#30363d]"
-                          >
+                          <span key={label}
+                            className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#21262d] text-[#8b949e] border border-[#30363d]">
                             {label}
                           </span>
                         ))}
@@ -357,36 +340,24 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
                       <span>{card.updated}</span>
                       <div className="flex items-center gap-2">
                         {card.runId && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onViewLogs(card.runId!);
-                            }}
-                            className="text-[#58a6ff] hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
+                          <button onClick={(e) => { e.stopPropagation(); onViewLogs(card.runId!); }}
+                            className="text-[#58a6ff] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Logs
                           </button>
                         )}
-                        {card.runStatus === "running" && card.runId && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              stopAgent(card.runId!);
-                            }}
-                            className="text-[#f85149] hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
+                        {(card.runStatus === "running" || card.runStatus === "preparing") && card.runId && (
+                          <button onClick={(e) => { e.stopPropagation(); stopAgent(card.runId!); }}
+                            className="text-[#f85149] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Stop
                           </button>
                         )}
                         {!card.runId && col.id === "open" && (
-                          <button
-                            onClick={(e) => {
+                          <button onClick={(e) => {
                               e.stopPropagation();
                               const issue = issues.find((i) => i.number === card.number);
                               if (issue) launchIssue(issue);
                             }}
-                            className="text-[#3fb950] hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
+                            className="text-[#3fb950] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Run
                           </button>
                         )}
@@ -396,9 +367,7 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
                 ))}
 
                 {col.items.length === 0 && (
-                  <div className="text-center py-8 text-xs text-[#30363d]">
-                    No issues
-                  </div>
+                  <div className="text-center py-8 text-xs text-[#30363d]">No issues</div>
                 )}
               </div>
             </div>

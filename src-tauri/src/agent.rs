@@ -1,4 +1,4 @@
-use crate::orchestrator::{AgentRun, AgentStatus, RunConfig};
+use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig};
 use crate::workspace;
 use crate::SharedState;
 use chrono::Utc;
@@ -16,17 +16,74 @@ pub struct AgentLogLine {
     pub line: String,
 }
 
-fn build_agent_prompt(issue_number: u64, repo: &str, issue_title: &str, issue_body: &str) -> String {
-    format!(
-        "You are working on GitHub issue #{} in repository {}.\n\n\
-         Title: {}\n\n\
-         Description:\n{}\n\n\
-         Please analyze the issue, implement the fix or feature, and commit your changes. \
-         Create a PR when done using: gh pr create --title \"Fix #{}\" --body \"Closes #{}\"",
-        issue_number, repo, issue_title,
-        issue_body.chars().take(4000).collect::<String>(),
-        issue_number, issue_number
-    )
+fn build_prompt(stage: &PipelineStage, issue_number: u64, repo: &str, issue_title: &str, issue_body: &str) -> String {
+    match stage {
+        PipelineStage::Implement => format!(
+            "You are working on GitHub issue #{num} in repository {repo}.\n\n\
+             Title: {title}\n\n\
+             Description:\n{body}\n\n\
+             Instructions:\n\
+             1. Analyze the issue carefully\n\
+             2. Implement the fix or feature with clean, well-structured code\n\
+             3. Commit your changes with a descriptive message\n\
+             4. Create a Pull Request:\n\
+                gh pr create --title \"Fix #{num}: {title}\" --body \"Closes #{num}\"\n\n\
+             Do NOT run tests - that will be handled in a later stage.",
+            num = issue_number,
+            repo = repo,
+            title = issue_title,
+            body = issue_body.chars().take(4000).collect::<String>(),
+        ),
+
+        PipelineStage::CodeReview => format!(
+            "You are a code reviewer for repository {repo}.\n\n\
+             A Pull Request has been created for issue #{num}: {title}\n\n\
+             Instructions:\n\
+             1. Run: gh pr list --state open --json number,title,headRefName | to find the PR for issue #{num}\n\
+             2. Check out the PR branch\n\
+             3. Review ALL changed files carefully. Look for:\n\
+                - Bugs, logic errors, edge cases\n\
+                - Security issues\n\
+                - Code style and readability\n\
+                - Missing error handling\n\
+                - Performance issues\n\
+             4. If you find issues, FIX them directly in the code, commit, and push\n\
+             5. If the code looks good or after fixing issues, leave a summary comment on the PR:\n\
+                gh pr comment <PR_NUMBER> --body \"Code review completed. <summary of findings and fixes>\"\n\n\
+             Be thorough but practical. Fix real problems, don't nitpick style.",
+            repo = repo,
+            num = issue_number,
+            title = issue_title,
+        ),
+
+        PipelineStage::Testing => format!(
+            "You are a test engineer for repository {repo}.\n\n\
+             A Pull Request for issue #{num}: {title} has been reviewed and is ready for testing.\n\n\
+             Instructions:\n\
+             1. Run: gh pr list --state open --json number,title,headRefName | to find the PR for issue #{num}\n\
+             2. Check out the PR branch\n\
+             3. Identify the project type and run the appropriate test commands:\n\
+                - Node.js: npm test or npm run test\n\
+                - Python: pytest or python -m pytest\n\
+                - Rust: cargo test\n\
+                - Go: go test ./...\n\
+                - Swift: swift test\n\
+                - Or check package.json / Makefile / README for test instructions\n\
+             4. If tests fail:\n\
+                - Analyze the failures\n\
+                - Fix the issues in the code\n\
+                - Commit and push the fixes\n\
+                - Re-run tests to confirm they pass\n\
+             5. If all tests pass, comment on the PR:\n\
+                gh pr comment <PR_NUMBER> --body \"All tests passing. Ready to merge.\"\n\n\
+             Make sure ALL tests pass before finishing.",
+            repo = repo,
+            num = issue_number,
+            title = issue_title,
+        ),
+
+        PipelineStage::Done => String::new(), // Should never be used
+    }
 }
 
 fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>) {
@@ -51,8 +108,7 @@ fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>)
     }
 }
 
-/// Internal function to launch an agent for an issue. Used by both the Tauri command
-/// and the orchestrator poll loop.
+/// Launch an agent for a specific pipeline stage.
 pub async fn launch_agent(
     app: AppHandle,
     state: SharedState,
@@ -60,6 +116,7 @@ pub async fn launch_agent(
     issue_number: u64,
     issue_title: String,
     issue_body: String,
+    stage: PipelineStage,
 ) -> Result<String, String> {
     let run_id = Uuid::new_v4().to_string();
     let config = {
@@ -69,12 +126,15 @@ pub async fn launch_agent(
 
     let workspace_path = workspace::ensure_workspace(&repo, issue_number)?;
 
+    let stage_label = stage.to_string();
+
     let run = AgentRun {
         id: run_id.clone(),
         repo: repo.clone(),
         issue_number,
         issue_title: issue_title.clone(),
         status: AgentStatus::Preparing,
+        stage: stage.clone(),
         started_at: Utc::now().to_rfc3339(),
         finished_at: None,
         logs: Vec::new(),
@@ -91,17 +151,24 @@ pub async fn launch_agent(
     let _ = app.emit("agent-status-changed", serde_json::json!({
         "run_id": &run_id,
         "status": "preparing",
+        "stage": &stage_label,
     }));
 
-    let prompt = build_agent_prompt(issue_number, &repo, &issue_title, &issue_body);
+    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
     let (cmd, args) = build_command_args(&config, &prompt);
 
     let run_id_clone = run_id.clone();
     let state_clone = state.clone();
     let app_clone = app.clone();
+    let repo_clone = repo.clone();
+    let title_clone = issue_title.clone();
+    let body_clone = issue_body.clone();
 
     tokio::spawn(async move {
-        run_agent_process(app_clone, state_clone, run_id_clone, cmd, args, workspace_path).await;
+        run_agent_process(
+            app_clone, state_clone, run_id_clone, cmd, args,
+            workspace_path, stage, repo_clone, issue_number, title_clone, body_clone,
+        ).await;
     });
 
     Ok(run_id)
@@ -123,6 +190,7 @@ pub async fn start_single_issue(
         issue_number,
         issue_title,
         issue_body.unwrap_or_default(),
+        PipelineStage::Implement,
     )
     .await
 }
@@ -134,7 +202,14 @@ async fn run_agent_process(
     cmd: String,
     args: Vec<String>,
     workspace_path: std::path::PathBuf,
+    stage: PipelineStage,
+    repo: String,
+    issue_number: u64,
+    issue_title: String,
+    issue_body: String,
 ) {
+    let stage_label = stage.to_string();
+
     // Update status to running
     {
         let mut s = state.lock().await;
@@ -145,6 +220,7 @@ async fn run_agent_process(
     let _ = app.emit("agent-status-changed", serde_json::json!({
         "run_id": &run_id,
         "status": "running",
+        "stage": &stage_label,
     }));
 
     let result = Command::new(&cmd)
@@ -171,12 +247,12 @@ async fn run_agent_process(
             let _ = app.emit("agent-status-changed", serde_json::json!({
                 "run_id": &run_id,
                 "status": "failed",
+                "stage": &stage_label,
             }));
             return;
         }
     };
 
-    // Store PID for potential kill
     if let Some(pid) = child.id() {
         let mut s = state.lock().await;
         s.agent_pids.insert(run_id.clone(), pid);
@@ -239,30 +315,136 @@ async fn run_agent_process(
     let _ = stdout_handle.await;
     let _ = stderr_handle.await;
 
-    let mut s = state.lock().await;
-    s.agent_pids.remove(&run_id);
-    if let Some(run) = s.runs.get_mut(&run_id) {
-        run.finished_at = Some(Utc::now().to_rfc3339());
-        match exit_status {
-            Ok(status) if status.success() => {
+    // Determine if agent succeeded
+    let succeeded = match &exit_status {
+        Ok(s) => s.success(),
+        Err(_) => false,
+    };
+
+    {
+        let mut s = state.lock().await;
+        s.agent_pids.remove(&run_id);
+        if let Some(run) = s.runs.get_mut(&run_id) {
+            run.finished_at = Some(Utc::now().to_rfc3339());
+            if succeeded {
                 run.status = AgentStatus::Completed;
-            }
-            Ok(status) => {
+            } else {
                 run.status = AgentStatus::Failed;
-                run.error = Some(format!("Agent exited with code: {}", status.code().unwrap_or(-1)));
-            }
-            Err(e) => {
-                run.status = AgentStatus::Failed;
-                run.error = Some(format!("Agent process error: {}", e));
+                run.error = Some(match &exit_status {
+                    Ok(status) => format!("Agent exited with code: {}", status.code().unwrap_or(-1)),
+                    Err(e) => format!("Agent process error: {}", e),
+                });
             }
         }
     }
-    drop(s);
 
     let _ = app.emit("agent-status-changed", serde_json::json!({
         "run_id": &run_id,
-        "status": "completed",
+        "status": if succeeded { "completed" } else { "failed" },
+        "stage": &stage_label,
     }));
+
+    // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
+    if succeeded {
+        let next_stage = match stage {
+            PipelineStage::Implement => Some(PipelineStage::CodeReview),
+            PipelineStage::CodeReview => Some(PipelineStage::Testing),
+            PipelineStage::Testing => {
+                // Testing passed → mark as Done (create a "done" run record)
+                let done_id = Uuid::new_v4().to_string();
+                let done_run = AgentRun {
+                    id: done_id.clone(),
+                    repo: repo.clone(),
+                    issue_number,
+                    issue_title: issue_title.clone(),
+                    status: AgentStatus::Completed,
+                    stage: PipelineStage::Done,
+                    started_at: Utc::now().to_rfc3339(),
+                    finished_at: Some(Utc::now().to_rfc3339()),
+                    logs: vec!["Pipeline completed successfully. All stages passed.".to_string()],
+                    workspace_path: workspace_path.to_string_lossy().to_string(),
+                    error: None,
+                    attempt: 1,
+                };
+                {
+                    let mut s = state.lock().await;
+                    s.runs.insert(done_id.clone(), done_run);
+                }
+                let _ = app.emit("agent-status-changed", serde_json::json!({
+                    "run_id": &done_id,
+                    "status": "completed",
+                    "stage": "done",
+                }));
+                None
+            }
+            PipelineStage::Done => None,
+        };
+
+        if let Some(next) = next_stage {
+            spawn_next_stage(
+                app.clone(), state.clone(), repo, issue_number,
+                issue_title, issue_body, next, workspace_path,
+            );
+        }
+    }
+}
+
+/// Spawn the next pipeline stage in a separate task, breaking the async recursion cycle.
+fn spawn_next_stage(
+    app: AppHandle,
+    state: SharedState,
+    repo: String,
+    issue_number: u64,
+    issue_title: String,
+    issue_body: String,
+    stage: PipelineStage,
+    workspace_path: std::path::PathBuf,
+) {
+    let stage_label = stage.to_string();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+        let run_id = Uuid::new_v4().to_string();
+        let config = {
+            let s = state.lock().await;
+            s.config.clone()
+        };
+
+        let run = AgentRun {
+            id: run_id.clone(),
+            repo: repo.clone(),
+            issue_number,
+            issue_title: issue_title.clone(),
+            status: AgentStatus::Preparing,
+            stage: stage.clone(),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: None,
+            logs: Vec::new(),
+            workspace_path: workspace_path.to_string_lossy().to_string(),
+            error: None,
+            attempt: 1,
+        };
+
+        {
+            let mut s = state.lock().await;
+            s.runs.insert(run_id.clone(), run);
+        }
+
+        let _ = app.emit("agent-status-changed", serde_json::json!({
+            "run_id": &run_id,
+            "status": "preparing",
+            "stage": &stage_label,
+        }));
+
+        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
+        let (cmd, args) = build_command_args(&config, &prompt);
+
+        run_agent_process(
+            app, state, run_id, cmd, args,
+            workspace_path, stage, repo, issue_number, issue_title, issue_body,
+        ).await;
+    });
 }
 
 #[tauri::command]
