@@ -14,6 +14,7 @@ interface AgentRun {
   workspace_path: string;
   error: string | null;
   attempt: number;
+  max_retries: number;
   logs: string[];
 }
 
@@ -51,6 +52,8 @@ type KanbanCard = {
   runStage?: string;
   error?: string | null;
   elapsed?: string;
+  attempt?: number;
+  maxRetries?: number;
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -176,6 +179,8 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       runStage: run?.stage,
       error: run?.error,
       elapsed: run ? formatElapsed(run.started_at, run.finished_at) : undefined,
+      attempt: run?.attempt,
+      maxRetries: run?.max_retries,
     };
   }
 
@@ -306,7 +311,9 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: col.color }} />
                         <span className="text-xs" style={{ color: col.color }}>
-                          {STAGE_LABELS[card.runStage || ""] || card.runStage} - {card.elapsed}
+                          {STAGE_LABELS[card.runStage || ""] || card.runStage}
+                          {card.attempt && card.attempt > 1 && ` (attempt ${card.attempt}/${(card.maxRetries || 0) + 1})`}
+                          {" "}- {card.elapsed}
                         </span>
                       </div>
                     )}
@@ -325,7 +332,10 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
                     {/* Error */}
                     {card.error && (
-                      <div className="text-xs text-[#f85149] truncate mb-2">{card.error}</div>
+                      <div className="text-xs text-[#f85149] truncate mb-2">
+                        {card.attempt && card.attempt > 1 && `[Attempt ${card.attempt}/${(card.maxRetries || 0) + 1}] `}
+                        {card.error}
+                      </div>
                     )}
 
                     {/* Labels */}
