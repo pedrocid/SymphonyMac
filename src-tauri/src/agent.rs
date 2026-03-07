@@ -121,7 +121,8 @@ fn format_command_display(cmd: &str, args: &[String]) -> String {
         .iter()
         .map(|a| {
             if a.len() > 80 {
-                format!("\"{}...\"", &a[..77])
+                let truncated: String = a.chars().take(77).collect();
+                format!("\"{}...\"", truncated)
             } else if a.contains(' ') {
                 format!("\"{}\"", a)
             } else {

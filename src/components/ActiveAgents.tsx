@@ -107,7 +107,7 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
   const [liveLogs, setLiveLogs] = useState<Record<string, { line: string; ts: string }[]>>({});
   const [now, setNow] = useState(Date.now());
   const [completedTimestamps, setCompletedTimestamps] = useState<number[]>([]);
-  const [logFilter, setLogFilter] = useState<LogFilter>("all");
+  const [logFilters, setLogFilters] = useState<Record<string, LogFilter>>({});
 
   useEffect(() => {
     loadStatus();
@@ -232,6 +232,7 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
             const stageColor = STAGE_COLORS[run.stage] || "#8b949e";
             const stageIdx = STAGES.indexOf(run.stage);
             const liveEntries = liveLogs[run.id] || [];
+            const logFilter = logFilters[run.id] || "all";
             const filteredEntries = liveEntries.filter((e) => {
               if (logFilter === "stderr") return e.line.startsWith("[stderr]");
               if (logFilter === "stdout") return !e.line.startsWith("[stderr]");
@@ -345,7 +346,7 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
                     {(["all", "stdout", "stderr"] as LogFilter[]).map((f) => (
                       <button
                         key={f}
-                        onClick={() => setLogFilter(f)}
+                        onClick={() => setLogFilters((prev) => ({ ...prev, [run.id]: f }))}
                         className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
                           logFilter === f
                             ? "bg-[#30363d] text-[#e6edf3]"
