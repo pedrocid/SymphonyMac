@@ -50,20 +50,28 @@ export function PipelineReportView({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadReport();
+    let issueNumber: number | null = null;
+    loadReport().then((r) => { if (r) issueNumber = r.issue_number; });
     const unlisten = listen<PipelineReport>("pipeline-report", (event) => {
+      // Only update if this event matches the pipeline we're viewing
+      if (issueNumber !== null && event.payload.issue_number !== issueNumber) return;
+      issueNumber = event.payload.issue_number;
       setReport(event.payload);
       setLoading(false);
     });
     return () => { unlisten.then((f) => f()); };
   }, [runId]);
 
-  async function loadReport() {
+  async function loadReport(): Promise<PipelineReport | null> {
     try {
       const result = await invoke<PipelineReport | null>("get_pipeline_report", { runId });
       if (result) setReport(result);
-    } catch (_) {}
-    setLoading(false);
+      setLoading(false);
+      return result;
+    } catch (_) {
+      setLoading(false);
+      return null;
+    }
   }
 
   function toggleStage(name: string) {
