@@ -1,3 +1,4 @@
+use crate::logs;
 use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig};
 use crate::report;
 use crate::workspace;
@@ -172,6 +173,18 @@ pub async fn launch_agent(
         s.runs.insert(run_id.clone(), run);
     }
 
+    // Persist initial metadata to disk
+    logs::save_meta(&logs::LogMeta {
+        run_id: run_id.clone(),
+        repo: repo.clone(),
+        issue_number,
+        issue_title: issue_title.clone(),
+        stage: stage_label.clone(),
+        started_at: Utc::now().to_rfc3339(),
+        finished_at: None,
+        status: "preparing".to_string(),
+    });
+
     let _ = app.emit(
         "agent-status-changed",
         serde_json::json!({
@@ -334,12 +347,11 @@ async fn run_agent_process(
                     line: line.clone(),
                 };
                 let _ = app_out.emit("agent-log", &log_line);
+                // Persist to disk
+                logs::append_log_line(&run_id_out, &line);
                 let mut s = state_out.lock().await;
                 if let Some(run) = s.runs.get_mut(&run_id_out) {
                     run.logs.push(line);
-                    if run.logs.len() > 1000 {
-                        run.logs.drain(0..run.logs.len() - 1000);
-                    }
                 }
             }
         }
@@ -354,15 +366,18 @@ async fn run_agent_process(
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                let stderr_line = format!("[stderr] {}", line);
                 let log_line = AgentLogLine {
                     run_id: run_id_err.clone(),
                     timestamp: Utc::now().to_rfc3339(),
-                    line: format!("[stderr] {}", line),
+                    line: stderr_line.clone(),
                 };
                 let _ = app_err.emit("agent-log", &log_line);
+                // Persist to disk
+                logs::append_log_line(&run_id_err, &stderr_line);
                 let mut s = state_err.lock().await;
                 if let Some(run) = s.runs.get_mut(&run_id_err) {
-                    run.logs.push(format!("[stderr] {}", line));
+                    run.logs.push(stderr_line);
                 }
             }
         }
@@ -379,6 +394,7 @@ async fn run_agent_process(
         Err(_) => false,
     };
 
+    let final_status;
     {
         let mut s = state.lock().await;
         s.agent_pids.remove(&run_id);
@@ -396,7 +412,20 @@ async fn run_agent_process(
                 });
             }
         }
+        final_status = if succeeded { "completed" } else { "failed" };
     }
+
+    // Update metadata on disk with final status
+    logs::save_meta(&logs::LogMeta {
+        run_id: run_id.clone(),
+        repo: repo.clone(),
+        issue_number,
+        issue_title: issue_title.clone(),
+        stage: stage_label.clone(),
+        started_at: String::new(), // will be overwritten from existing
+        finished_at: Some(Utc::now().to_rfc3339()),
+        status: final_status.to_string(),
+    });
 
     let _ = app.emit(
         "agent-status-changed",
@@ -578,6 +607,18 @@ fn spawn_next_stage(
             let mut s = state.lock().await;
             s.runs.insert(run_id.clone(), run);
         }
+
+        // Persist metadata for chained stage
+        logs::save_meta(&logs::LogMeta {
+            run_id: run_id.clone(),
+            repo: repo.clone(),
+            issue_number,
+            issue_title: issue_title.clone(),
+            stage: stage_label.clone(),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: None,
+            status: "preparing".to_string(),
+        });
 
         let _ = app.emit(
             "agent-status-changed",

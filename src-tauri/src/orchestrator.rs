@@ -226,8 +226,52 @@ pub async fn get_agent_logs(
     if let Some(run) = s.runs.get(&run_id) {
         Ok(run.logs.clone())
     } else {
-        Err("Run not found".to_string())
+        // Fall back to disk logs for historical runs
+        let lines = crate::logs::read_log_lines(&run_id);
+        if lines.is_empty() {
+            Err("Run not found".to_string())
+        } else {
+            Ok(lines)
+        }
     }
+}
+
+#[tauri::command]
+pub async fn search_agent_logs(
+    run_id: String,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let results = crate::logs::search_logs(&run_id, &query);
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn export_logs_text(
+    run_id: String,
+) -> Result<String, String> {
+    let text = crate::logs::export_as_text(&run_id);
+    if text.is_empty() {
+        Err("No logs found for this run".to_string())
+    } else {
+        Ok(text)
+    }
+}
+
+#[tauri::command]
+pub async fn export_logs_json(
+    run_id: String,
+) -> Result<String, String> {
+    let json = crate::logs::export_as_json(&run_id);
+    if json.is_empty() {
+        Err("No logs found for this run".to_string())
+    } else {
+        Ok(json)
+    }
+}
+
+#[tauri::command]
+pub async fn list_log_history() -> Result<Vec<crate::logs::LogMeta>, String> {
+    Ok(crate::logs::list_all_runs())
 }
 
 #[tauri::command]
