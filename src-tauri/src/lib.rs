@@ -19,19 +19,22 @@ pub type SharedState = Arc<Mutex<OrchestratorState>>;
 pub fn run() {
     let state = Arc::new(Mutex::new(OrchestratorState::new()));
 
-    // Run TTL-based workspace cleanup at startup
-    let startup_state = state.clone();
-    tokio::spawn(async move {
-        let ttl_days = {
-            let s = startup_state.lock().await;
-            s.config.workspace_ttl_days
-        };
-        if ttl_days > 0 {
-            let _ = workspace::cleanup_old_workspaces(ttl_days as f64).await;
-        }
-    });
-
     tauri::Builder::default()
+        .setup({
+            let startup_state = state.clone();
+            move |_app| {
+                tauri::async_runtime::spawn(async move {
+                    let ttl_days = {
+                        let s = startup_state.lock().await;
+                        s.config.workspace_ttl_days
+                    };
+                    if ttl_days > 0 {
+                        let _ = workspace::cleanup_old_workspaces(ttl_days as f64).await;
+                    }
+                });
+                Ok(())
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
