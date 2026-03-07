@@ -15,6 +15,11 @@ interface AgentRun {
   error: string | null;
   attempt: number;
   logs: string[];
+  command_display: string | null;
+  agent_type: string;
+  last_log_line: string | null;
+  log_count: number;
+  activity: string | null;
 }
 
 interface OrchestratorStatus {
@@ -49,6 +54,18 @@ const STAGE_COLORS: Record<string, string> = {
   done: "#3fb950",
 };
 
+const ACTIVITY_ICONS: Record<string, string> = {
+  "Reading files": "\u{1F4D6}",
+  "Editing files": "\u{270F}\u{FE0F}",
+  "Running command": "\u{1F6E0}\u{FE0F}",
+  "Searching code": "\u{1F50D}",
+  "Git operations": "\u{1F500}",
+  "Running tests": "\u{1F9EA}",
+  "Building": "\u{1F3D7}\u{FE0F}",
+  "Analyzing code": "\u{1F4CA}",
+  "Completed": "\u{2705}",
+};
+
 function formatElapsed(startedAt: string, finishedAt: string | null): string {
   const start = new Date(startedAt).getTime();
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
@@ -74,11 +91,23 @@ function getPipelineTotal(runs: AgentRun[], issueNumber: number): string {
   return formatElapsed(earliest.started_at, latest.finished_at);
 }
 
+function formatTimestamp(ts: string): string {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+type LogFilter = "all" | "stdout" | "stderr";
+
 export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => void }) {
   const [status, setStatus] = useState<OrchestratorStatus | null>(null);
-  const [liveLogs, setLiveLogs] = useState<Record<string, string[]>>({});
+  const [liveLogs, setLiveLogs] = useState<Record<string, { line: string; ts: string }[]>>({});
   const [now, setNow] = useState(Date.now());
   const [completedTimestamps, setCompletedTimestamps] = useState<number[]>([]);
+  const [logFilters, setLogFilters] = useState<Record<string, LogFilter>>({});
 
   useEffect(() => {
     loadStatus();
@@ -88,8 +117,8 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
     const unlistenOrch = listen("orchestrator-status", () => loadStatus());
     const unlistenLog = listen<AgentLogLine>("agent-log", (event) => {
       setLiveLogs((prev) => {
-        const lines = prev[event.payload.run_id] || [];
-        const updated = [...lines, event.payload.line].slice(-5);
+        const entries = prev[event.payload.run_id] || [];
+        const updated = [...entries, { line: event.payload.line, ts: event.payload.timestamp }].slice(-8);
         return { ...prev, [event.payload.run_id]: updated };
       });
     });
@@ -202,7 +231,16 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
           activeRuns.map((run) => {
             const stageColor = STAGE_COLORS[run.stage] || "#8b949e";
             const stageIdx = STAGES.indexOf(run.stage);
-            const preview = liveLogs[run.id] || run.logs.slice(-3);
+            const liveEntries = liveLogs[run.id] || [];
+            const logFilter = logFilters[run.id] || "all";
+            const filteredEntries = liveEntries.filter((e) => {
+              if (logFilter === "stderr") return e.line.startsWith("[stderr]");
+              if (logFilter === "stdout") return !e.line.startsWith("[stderr]");
+              return true;
+            });
+            const hasOutput = run.log_count > 0 || liveEntries.length > 0;
+            const activityIcon = run.activity ? ACTIVITY_ICONS[run.activity] || "" : "";
+            const agentLabel = (run.agent_type || "claude").charAt(0).toUpperCase() + (run.agent_type || "claude").slice(1);
 
             return (
               <div
@@ -220,11 +258,26 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
                       >
                         {STAGE_LABELS[run.stage] || run.stage}
                       </span>
-                      {run.status === "preparing" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#d2992226] text-[#d29922]">
+                      {/* Agent type badge */}
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#388bfd26] text-[#58a6ff] font-medium">
+                        {agentLabel}
+                      </span>
+                      {run.status === "preparing" ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#d2992226] text-[#d29922] flex items-center gap-1">
+                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#d29922] animate-pulse" />
                           Preparing
                         </span>
-                      )}
+                      ) : run.activity ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#3fb95026] text-[#3fb950] flex items-center gap-1">
+                          <span>{activityIcon}</span>
+                          {run.activity}
+                        </span>
+                      ) : run.status === "running" && !hasOutput ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#d2992226] text-[#d29922] flex items-center gap-1">
+                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#d29922] animate-pulse" />
+                          Starting...
+                        </span>
+                      ) : null}
                     </div>
                     <h3 className="text-sm text-[#e6edf3] font-medium truncate">
                       {run.issue_title}
@@ -246,7 +299,15 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
                   </div>
                 </div>
 
-                {/* Timers */}
+                {/* Command display */}
+                {run.command_display && (
+                  <div className="mb-3 bg-[#0d1117] rounded px-2.5 py-1.5 flex items-center gap-2">
+                    <span className="text-[10px] text-[#484f58] shrink-0">$</span>
+                    <span className="text-[11px] font-mono text-[#8b949e] truncate">{run.command_display}</span>
+                  </div>
+                )}
+
+                {/* Timers + log count */}
                 <div className="flex items-center gap-4 mb-3 text-xs text-[#8b949e]">
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: stageColor }} />
@@ -254,6 +315,9 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
                   </div>
                   <div>
                     <span>Pipeline: {getPipelineTotal(status.runs, run.issue_number)}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[#484f58]">{run.log_count || liveEntries.length} lines</span>
                   </div>
                 </div>
 
@@ -276,20 +340,51 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
                 </div>
 
                 {/* Live log preview */}
-                {preview.length > 0 && (
-                  <div className="bg-[#0d1117] rounded p-2 font-mono text-[11px] leading-relaxed max-h-20 overflow-hidden">
-                    {preview.map((line, i) => (
-                      <div
-                        key={i}
-                        className={`truncate ${
-                          line.startsWith("[stderr]") ? "text-[#f85149]" : "text-[#484f58]"
+                <div className="bg-[#0d1117] rounded overflow-hidden">
+                  {/* Log filter tabs */}
+                  <div className="flex items-center gap-1 px-2 pt-1.5 pb-1 border-b border-[#21262d]">
+                    {(["all", "stdout", "stderr"] as LogFilter[]).map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setLogFilters((prev) => ({ ...prev, [run.id]: f }))}
+                        className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                          logFilter === f
+                            ? "bg-[#30363d] text-[#e6edf3]"
+                            : "text-[#484f58] hover:text-[#8b949e]"
                         }`}
                       >
-                        {line}
-                      </div>
+                        {f === "all" ? "All" : f === "stdout" ? "Output" : "Errors"}
+                      </button>
                     ))}
                   </div>
-                )}
+                  <div className="p-2 font-mono text-[11px] leading-relaxed max-h-28 overflow-hidden">
+                    {filteredEntries.length > 0 ? (
+                      filteredEntries.map((entry, i) => (
+                        <div key={i} className="flex gap-2 truncate">
+                          <span className="text-[#30363d] shrink-0 text-[10px]">
+                            {formatTimestamp(entry.ts)}
+                          </span>
+                          <span
+                            className={`truncate ${
+                              entry.line.startsWith("[stderr]") ? "text-[#f85149]" : "text-[#8b949e]"
+                            }`}
+                          >
+                            {entry.line}
+                          </span>
+                        </div>
+                      ))
+                    ) : hasOutput ? (
+                      <div className="text-[#484f58] truncate">
+                        {run.last_log_line || "Processing..."}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-[#484f58]">
+                        <span className="inline-block w-3 h-3 border-2 border-[#30363d] border-t-[#58a6ff] rounded-full animate-spin" />
+                        <span>Running...</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             );
           })

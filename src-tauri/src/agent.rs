@@ -111,6 +111,52 @@ fn build_prompt(
     }
 }
 
+/// Create a short display string for the command being run (truncates the prompt).
+fn format_command_display(cmd: &str, args: &[String]) -> String {
+    let binary = std::path::Path::new(cmd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| cmd.to_string());
+    let display_args: Vec<String> = args
+        .iter()
+        .map(|a| {
+            if a.len() > 80 {
+                let truncated: String = a.chars().take(77).collect();
+                format!("\"{}...\"", truncated)
+            } else if a.contains(' ') {
+                format!("\"{}\"", a)
+            } else {
+                a.clone()
+            }
+        })
+        .collect();
+    format!("{} {}", binary, display_args.join(" "))
+}
+
+/// Detect the current agent activity from a log line.
+fn detect_activity(line: &str) -> Option<String> {
+    let lower = line.to_lowercase();
+    if lower.contains("reading file") || lower.contains("read(") || lower.contains("cat ") {
+        Some("Reading files".to_string())
+    } else if lower.contains("editing file") || lower.contains("edit(") || lower.contains("write(") || lower.contains("sed ") {
+        Some("Editing files".to_string())
+    } else if lower.contains("bash(") || lower.contains("running command") || lower.contains("$ ") {
+        Some("Running command".to_string())
+    } else if lower.contains("grep(") || lower.contains("glob(") || lower.contains("searching") {
+        Some("Searching code".to_string())
+    } else if lower.contains("git commit") || lower.contains("git push") || lower.contains("gh pr") {
+        Some("Git operations".to_string())
+    } else if lower.contains("npm test") || lower.contains("cargo test") || lower.contains("pytest") || lower.contains("go test") {
+        Some("Running tests".to_string())
+    } else if lower.contains("compiling") || lower.contains("building") || lower.contains("npm run build") {
+        Some("Building".to_string())
+    } else if lower.contains("analyzing") || lower.contains("reviewing") {
+        Some("Analyzing code".to_string())
+    } else {
+        None
+    }
+}
+
 fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>) {
     match config.agent_type.as_str() {
         "codex" => {
@@ -162,6 +208,10 @@ pub async fn launch_agent(
 
     let max_retries = config.max_retries;
 
+    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
+    let (cmd, args) = build_command_args(&config, &prompt);
+    let command_display = format_command_display(&cmd, &args);
+
     let run = AgentRun {
         id: run_id.clone(),
         repo: repo.clone(),
@@ -177,6 +227,11 @@ pub async fn launch_agent(
         attempt: 1,
         max_retries,
         report: None,
+        command_display: Some(command_display.clone()),
+        agent_type: config.agent_type.clone(),
+        last_log_line: None,
+        log_count: 0,
+        activity: None,
     };
 
     {
@@ -204,9 +259,6 @@ pub async fn launch_agent(
             "stage": &stage_label,
         }),
     );
-
-    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
-    let (cmd, args) = build_command_args(&config, &prompt);
 
     // Update dock badge when a new agent starts
     update_dock_badge(&state).await;
@@ -367,17 +419,24 @@ async fn run_agent_process(
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                let ts = Utc::now().to_rfc3339();
                 let log_line = AgentLogLine {
                     run_id: run_id_out.clone(),
-                    timestamp: Utc::now().to_rfc3339(),
+                    timestamp: ts.clone(),
                     line: line.clone(),
                 };
                 let _ = app_out.emit("agent-log", &log_line);
                 // Persist to disk
                 logs::append_log_line(&run_id_out, &line);
+                let activity = detect_activity(&line);
                 let mut s = state_out.lock().await;
                 if let Some(run) = s.runs.get_mut(&run_id_out) {
-                    run.logs.push(line);
+                    run.logs.push(line.clone());
+                    run.last_log_line = Some(line.clone());
+                    run.log_count += 1;
+                    if let Some(ref act) = activity {
+                        run.activity = Some(act.clone());
+                    }
                 }
             }
         }
@@ -403,7 +462,9 @@ async fn run_agent_process(
                 logs::append_log_line(&run_id_err, &stderr_line);
                 let mut s = state_err.lock().await;
                 if let Some(run) = s.runs.get_mut(&run_id_err) {
-                    run.logs.push(stderr_line);
+                    run.logs.push(stderr_line.clone());
+                    run.last_log_line = Some(stderr_line);
+                    run.log_count += 1;
                 }
             }
         }
@@ -578,6 +639,11 @@ async fn run_agent_process(
                     attempt: 1,
                     max_retries: 0,
                     report: Some(pipeline_report.clone()),
+                    command_display: None,
+                    agent_type: String::new(),
+                    last_log_line: None,
+                    log_count: 0,
+                    activity: Some("Completed".to_string()),
                 };
                 {
                     let mut s = state.lock().await;
@@ -669,6 +735,11 @@ fn spawn_next_stage(
             attempt: 1,
             max_retries: config.max_retries,
             report: None,
+            command_display: None,
+            agent_type: config.agent_type.clone(),
+            last_log_line: None,
+            log_count: 0,
+            activity: None,
         };
 
         {
@@ -699,6 +770,16 @@ fn spawn_next_stage(
 
         let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
         let (cmd, args) = build_command_args(&config, &prompt);
+        let command_display = format_command_display(&cmd, &args);
+
+        // Update command_display in the run
+        {
+            let mut s = state.lock().await;
+            if let Some(run) = s.runs.get_mut(&run_id) {
+                run.command_display = Some(command_display);
+                run.agent_type = config.agent_type.clone();
+            }
+        }
 
         // Update dock badge for the new chained stage
         update_dock_badge(&state).await;
@@ -766,6 +847,11 @@ fn spawn_retry(
             attempt,
             max_retries,
             report: None,
+            command_display: None,
+            agent_type: config.agent_type.clone(),
+            last_log_line: None,
+            log_count: 0,
+            activity: None,
         };
 
         {
@@ -790,6 +876,13 @@ fn spawn_retry(
             base_prompt, previous_error
         );
         let (cmd, args) = build_command_args(&config, &prompt);
+        let command_display = format_command_display(&cmd, &args);
+        {
+            let mut s = state.lock().await;
+            if let Some(run) = s.runs.get_mut(&run_id) {
+                run.command_display = Some(command_display);
+            }
+        }
 
         update_dock_badge(&state).await;
 

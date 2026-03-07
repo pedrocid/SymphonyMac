@@ -54,6 +54,16 @@ pub struct AgentRun {
     pub max_retries: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::PipelineReport>,
+    /// The CLI command invoked (e.g. "claude --print ...")
+    pub command_display: Option<String>,
+    /// Agent type used: "claude" or "codex"
+    pub agent_type: String,
+    /// Last line of output received
+    pub last_log_line: Option<String>,
+    /// Total number of log lines produced so far
+    pub log_count: u32,
+    /// Detected activity state from log content
+    pub activity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
