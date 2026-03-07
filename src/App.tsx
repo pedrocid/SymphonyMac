@@ -19,6 +19,9 @@ export interface RunConfig {
   max_turns: number;
   notifications_enabled: boolean;
   notification_sound: boolean;
+  cleanup_on_failure: boolean;
+  cleanup_on_stop: boolean;
+  workspace_ttl_days: number;
 }
 
 function App() {
