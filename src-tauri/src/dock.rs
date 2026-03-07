@@ -5,8 +5,19 @@ use cocoa::base::nil;
 use cocoa::foundation::NSString;
 use objc::runtime::Object;
 use objc::*;
+use std::ffi::c_void;
 
-pub fn set_badge_count(count: usize) {
+extern "C" {
+    fn dispatch_get_main_queue() -> *const c_void;
+    fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+}
+
+extern "C" fn set_badge_on_main(context: *mut c_void) {
+    let count = context as usize;
     unsafe {
         let app: *mut Object = NSApp();
         let dock_tile: *mut Object = msg_send![app, dockTile];
@@ -16,5 +27,15 @@ pub fn set_badge_count(count: usize) {
             nil
         };
         let _: () = msg_send![dock_tile, setBadgeLabel: label];
+    }
+}
+
+pub fn set_badge_count(count: usize) {
+    unsafe {
+        dispatch_async_f(
+            dispatch_get_main_queue(),
+            count as *mut c_void,
+            set_badge_on_main,
+        );
     }
 }

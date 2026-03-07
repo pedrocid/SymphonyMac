@@ -575,6 +575,9 @@ fn spawn_next_stage(
         let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
         let (cmd, args) = build_command_args(&config, &prompt);
 
+        // Update dock badge for the new chained stage
+        update_dock_badge(&state).await;
+
         run_agent_process(
             app,
             state,
