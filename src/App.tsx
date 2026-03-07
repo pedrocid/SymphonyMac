@@ -15,6 +15,8 @@ export interface RunConfig {
   poll_interval_secs: number;
   issue_label: string | null;
   max_turns: number;
+  notifications_enabled: boolean;
+  notification_sound: boolean;
 }
 
 function App() {
