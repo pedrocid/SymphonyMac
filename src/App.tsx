@@ -3,10 +3,11 @@ import "./App.css";
 import { RepoSelector } from "./components/RepoSelector";
 import { IssueList } from "./components/IssueList";
 import { Dashboard } from "./components/Dashboard";
+import { ActiveAgents } from "./components/ActiveAgents";
 import { Settings } from "./components/Settings";
 import { LogViewer } from "./components/LogViewer";
 
-export type View = "repos" | "issues" | "dashboard" | "settings";
+export type View = "repos" | "issues" | "dashboard" | "agents" | "settings";
 
 export interface RunConfig {
   agent_type: string;
@@ -54,6 +55,12 @@ function App() {
             icon="&#9632;"
           />
           <NavItem
+            label="Active Agents"
+            active={view === "agents"}
+            onClick={() => setView("agents")}
+            icon="&#9889;"
+          />
+          <NavItem
             label="Settings"
             active={view === "settings"}
             onClick={() => setView("settings")}
@@ -87,6 +94,11 @@ function App() {
         )}
         {view === "dashboard" && (
           <Dashboard
+            onViewLogs={(runId) => setSelectedRunId(runId)}
+          />
+        )}
+        {view === "agents" && (
+          <ActiveAgents
             onViewLogs={(runId) => setSelectedRunId(runId)}
           />
         )}
