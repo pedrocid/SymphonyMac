@@ -1,6 +1,7 @@
 mod agent;
 mod dock;
 mod github;
+mod logs;
 mod notification;
 mod orchestrator;
 mod paths;
@@ -47,6 +48,10 @@ pub fn run() {
             agent::start_single_issue,
             agent::stop_agent,
             orchestrator::get_pipeline_report,
+            orchestrator::search_agent_logs,
+            orchestrator::export_logs_text,
+            orchestrator::export_logs_json,
+            orchestrator::list_log_history,
             workspace::list_workspaces,
             workspace::cleanup_old_workspaces,
             workspace::cleanup_single_workspace,
