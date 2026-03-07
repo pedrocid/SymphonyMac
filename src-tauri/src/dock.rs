@@ -8,7 +8,7 @@ use objc::*;
 use std::ffi::c_void;
 
 extern "C" {
-    fn dispatch_get_main_queue() -> *const c_void;
+    static _dispatch_main_q: c_void;
     fn dispatch_async_f(
         queue: *const c_void,
         context: *mut c_void,
@@ -33,7 +33,7 @@ extern "C" fn set_badge_on_main(context: *mut c_void) {
 pub fn set_badge_count(count: usize) {
     unsafe {
         dispatch_async_f(
-            dispatch_get_main_queue(),
+            &_dispatch_main_q as *const c_void,
             count as *mut c_void,
             set_badge_on_main,
         );

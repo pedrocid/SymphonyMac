@@ -2,6 +2,15 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RunConfig } from "../App";
 
+interface WorkspaceInfo {
+  name: string;
+  path: string;
+  size_bytes: number;
+  size_display: string;
+  modified_at: string;
+  age_days: number;
+}
+
 export function Settings() {
   const [config, setConfig] = useState<RunConfig>({
     agent_type: "claude",
@@ -14,12 +23,19 @@ export function Settings() {
     notification_sound: true,
     max_retries: 1,
     retry_backoff_secs: 10,
+    cleanup_on_failure: false,
+    cleanup_on_stop: false,
+    workspace_ttl_days: 7,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  const [wsLoading, setWsLoading] = useState(false);
+  const [wsMessage, setWsMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadConfig();
+    loadWorkspaces();
   }, []);
 
   async function loadConfig() {
@@ -40,6 +56,68 @@ export function Settings() {
       setError(String(e));
     }
   }
+
+  async function loadWorkspaces() {
+    setWsLoading(true);
+    try {
+      const result = await invoke<WorkspaceInfo[]>("list_workspaces");
+      setWorkspaces(result);
+    } catch (_) {}
+    setWsLoading(false);
+  }
+
+  async function cleanupSingle(path: string) {
+    try {
+      await invoke("cleanup_single_workspace", { path });
+      setWsMessage("Workspace removed");
+      setTimeout(() => setWsMessage(null), 2000);
+      loadWorkspaces();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function cleanupAll() {
+    try {
+      const removed = await invoke<number>("cleanup_all_workspaces");
+      setWsMessage(`Removed ${removed} workspace${removed !== 1 ? "s" : ""}`);
+      setTimeout(() => setWsMessage(null), 2000);
+      loadWorkspaces();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function cleanupOld() {
+    try {
+      const removed = await invoke<number>("cleanup_old_workspaces", {
+        maxAgeDays: config.workspace_ttl_days,
+      });
+      setWsMessage(
+        removed > 0
+          ? `Removed ${removed} old workspace${removed !== 1 ? "s" : ""}`
+          : "No old workspaces to remove"
+      );
+      setTimeout(() => setWsMessage(null), 2000);
+      loadWorkspaces();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function formatAge(days: number): string {
+    if (days < 1) return "< 1 day";
+    if (days < 2) return "1 day";
+    return `${Math.floor(days)} days`;
+  }
+
+  const totalSize = workspaces.reduce((sum, ws) => sum + ws.size_bytes, 0);
+  const totalSizeDisplay =
+    totalSize < 1024 * 1024
+      ? `${(totalSize / 1024).toFixed(1)} KB`
+      : totalSize < 1024 * 1024 * 1024
+        ? `${(totalSize / (1024 * 1024)).toFixed(1)} MB`
+        : `${(totalSize / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 
   return (
     <div className="flex-1 overflow-auto p-6">
@@ -205,6 +283,81 @@ export function Settings() {
             </div>
           </div>
 
+          {/* Workspace Cleanup */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-4">Workspace Cleanup</h3>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm text-[#e6edf3]">Cleanup on failure</label>
+                  <p className="text-xs text-[#8b949e] mt-0.5">
+                    Remove workspace when an agent fails (off = keep for debugging)
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setConfig({ ...config, cleanup_on_failure: !config.cleanup_on_failure })
+                  }
+                  className={`w-12 h-6 rounded-full transition-colors relative ${
+                    config.cleanup_on_failure ? "bg-[#58a6ff]" : "bg-[#30363d]"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      config.cleanup_on_failure ? "left-[26px]" : "left-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm text-[#e6edf3]">Cleanup on stop</label>
+                  <p className="text-xs text-[#8b949e] mt-0.5">
+                    Remove workspace when an agent is manually stopped
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setConfig({ ...config, cleanup_on_stop: !config.cleanup_on_stop })
+                  }
+                  className={`w-12 h-6 rounded-full transition-colors relative ${
+                    config.cleanup_on_stop ? "bg-[#58a6ff]" : "bg-[#30363d]"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                      config.cleanup_on_stop ? "left-[26px]" : "left-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">
+                  Workspace TTL (days)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={config.workspace_ttl_days}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      workspace_ttl_days: parseInt(e.target.value) || 7,
+                    })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Workspaces older than this are cleaned up on app startup. Set to 0 to disable.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Notifications */}
           <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
             <h3 className="text-sm font-medium text-[#e6edf3] mb-4">Notifications</h3>
@@ -273,6 +426,72 @@ export function Settings() {
             </button>
             {saved && <span className="text-sm text-[#3fb950]">Saved!</span>}
             {error && <span className="text-sm text-[#f85149]">{error}</span>}
+          </div>
+
+          {/* Workspaces */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-medium text-[#e6edf3]">Workspaces</h3>
+                <p className="text-xs text-[#8b949e] mt-0.5">
+                  {workspaces.length} workspace{workspaces.length !== 1 ? "s" : ""} &middot; {totalSizeDisplay} total
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={cleanupOld}
+                  disabled={workspaces.length === 0}
+                  className="px-3 py-1.5 bg-[#21262d] text-[#d29922] border border-[#30363d] rounded-md text-xs hover:bg-[#30363d] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Clean old ({config.workspace_ttl_days}d+)
+                </button>
+                <button
+                  onClick={cleanupAll}
+                  disabled={workspaces.length === 0}
+                  className="px-3 py-1.5 bg-[#21262d] text-[#f85149] border border-[#30363d] rounded-md text-xs hover:bg-[#30363d] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Clean all
+                </button>
+                <button
+                  onClick={loadWorkspaces}
+                  className="px-3 py-1.5 bg-[#21262d] text-[#8b949e] border border-[#30363d] rounded-md text-xs hover:bg-[#30363d] transition-colors"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {wsMessage && (
+              <div className="mb-3 text-sm text-[#3fb950]">{wsMessage}</div>
+            )}
+
+            {wsLoading ? (
+              <div className="text-sm text-[#8b949e] py-4 text-center">Loading...</div>
+            ) : workspaces.length === 0 ? (
+              <div className="text-sm text-[#484f58] py-4 text-center">No workspaces found</div>
+            ) : (
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {workspaces.map((ws) => (
+                  <div
+                    key={ws.path}
+                    className="flex items-center justify-between bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-[#e6edf3] truncate">{ws.name}</p>
+                      <p className="text-xs text-[#8b949e]">
+                        {ws.size_display} &middot; {formatAge(ws.age_days)} old
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => cleanupSingle(ws.path)}
+                      className="ml-3 px-2 py-1 text-xs text-[#f85149] hover:bg-[#f8514915] rounded transition-colors shrink-0"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

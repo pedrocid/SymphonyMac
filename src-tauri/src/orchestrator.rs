@@ -68,6 +68,9 @@ pub struct RunConfig {
     pub notification_sound: bool,
     pub max_retries: u32,
     pub retry_backoff_secs: u64,
+    pub cleanup_on_failure: bool,
+    pub cleanup_on_stop: bool,
+    pub workspace_ttl_days: u32,
 }
 
 impl Default for RunConfig {
@@ -83,6 +86,9 @@ impl Default for RunConfig {
             notification_sound: true,
             max_retries: 1,
             retry_backoff_secs: 10,
+            cleanup_on_failure: false,
+            cleanup_on_stop: false,
+            workspace_ttl_days: 7,
         }
     }
 }
