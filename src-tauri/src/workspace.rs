@@ -21,14 +21,23 @@ pub fn ensure_workspace(repo: &str, issue_number: u64) -> Result<PathBuf, String
 
     // Clone the repo into the workspace
     let clone_url = format!("https://github.com/{}.git", repo);
-    let output = Command::new("gh")
-        .args(["repo", "clone", &clone_url, workspace_path.to_str().unwrap(), "--", "--depth=1"])
+    let output = Command::new(crate::paths::resolve("gh"))
+        .env("PATH", crate::paths::build_path_env())
+        .args([
+            "repo",
+            "clone",
+            &clone_url,
+            workspace_path.to_str().unwrap(),
+            "--",
+            "--depth=1",
+        ])
         .output()
         .map_err(|e| format!("Failed to clone repo: {}", e))?;
 
     if !output.status.success() {
         // Retry with gh repo clone format
-        let output2 = Command::new("gh")
+        let output2 = Command::new(crate::paths::resolve("gh"))
+            .env("PATH", crate::paths::build_path_env())
             .args(["repo", "clone", repo, workspace_path.to_str().unwrap()])
             .output()
             .map_err(|e| format!("Failed to clone repo: {}", e))?;
@@ -43,7 +52,8 @@ pub fn ensure_workspace(repo: &str, issue_number: u64) -> Result<PathBuf, String
 
     // Create a branch for the issue
     let branch_name = format!("symphony/issue-{}", issue_number);
-    let _ = Command::new("git")
+    let _ = Command::new(crate::paths::resolve("git"))
+        .env("PATH", crate::paths::build_path_env())
         .args(["checkout", "-b", &branch_name])
         .current_dir(&workspace_path)
         .output();

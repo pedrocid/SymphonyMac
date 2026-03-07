@@ -1,7 +1,8 @@
+mod agent;
 mod github;
 mod orchestrator;
+mod paths;
 mod workspace;
-mod agent;
 
 use orchestrator::OrchestratorState;
 use std::sync::Arc;

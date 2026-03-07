@@ -21,6 +21,7 @@ pub enum PipelineStage {
     Implement,
     CodeReview,
     Testing,
+    Merge,
     Done,
 }
 
@@ -30,6 +31,7 @@ impl std::fmt::Display for PipelineStage {
             PipelineStage::Implement => write!(f, "implement"),
             PipelineStage::CodeReview => write!(f, "code_review"),
             PipelineStage::Testing => write!(f, "testing"),
+            PipelineStage::Merge => write!(f, "merge"),
             PipelineStage::Done => write!(f, "done"),
         }
     }
@@ -108,19 +110,31 @@ impl OrchestratorState {
 
     /// Get the latest run for a given issue number
     pub fn latest_run_for_issue(&self, issue_number: u64) -> Option<&AgentRun> {
-        self.runs.values()
+        self.runs
+            .values()
             .filter(|r| r.issue_number == issue_number)
             .max_by_key(|r| r.started_at.clone())
     }
 }
 
 #[tauri::command]
-pub async fn get_status(state: tauri::State<'_, SharedState>) -> Result<OrchestratorStatus, String> {
+pub async fn get_status(
+    state: tauri::State<'_, SharedState>,
+) -> Result<OrchestratorStatus, String> {
     let s = state.lock().await;
     let runs: Vec<AgentRun> = s.runs.values().cloned().collect();
-    let total_completed = runs.iter().filter(|r| r.stage == PipelineStage::Done).count();
-    let total_failed = runs.iter().filter(|r| r.status == AgentStatus::Failed).count();
-    let active_count = runs.iter().filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing).count();
+    let total_completed = runs
+        .iter()
+        .filter(|r| r.stage == PipelineStage::Done)
+        .count();
+    let total_failed = runs
+        .iter()
+        .filter(|r| r.status == AgentStatus::Failed)
+        .count();
+    let active_count = runs
+        .iter()
+        .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
+        .count();
 
     Ok(OrchestratorStatus {
         is_running: s.is_running,
@@ -159,10 +173,13 @@ pub async fn start_orchestrator(
         s.stop_flag = false;
     }
 
-    let _ = app.emit("orchestrator-status", serde_json::json!({
-        "running": true,
-        "repo": &repo,
-    }));
+    let _ = app.emit(
+        "orchestrator-status",
+        serde_json::json!({
+            "running": true,
+            "repo": &repo,
+        }),
+    );
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
@@ -184,9 +201,12 @@ pub async fn stop_orchestrator(
     s.is_running = false;
     drop(s);
 
-    let _ = app.emit("orchestrator-status", serde_json::json!({
-        "running": false,
-    }));
+    let _ = app.emit(
+        "orchestrator-status",
+        serde_json::json!({
+            "running": false,
+        }),
+    );
 
     Ok(())
 }
@@ -220,28 +240,44 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             break;
         }
 
-        let _ = app.emit("orchestrator-poll", serde_json::json!({
-            "timestamp": Utc::now().to_rfc3339(),
-        }));
+        let _ = app.emit(
+            "orchestrator-poll",
+            serde_json::json!({
+                "timestamp": Utc::now().to_rfc3339(),
+            }),
+        );
 
         // ---- STEP 1: Fetch issues and PRs in parallel ----
-        let issues = match github::list_issues(repo.clone(), Some("open".to_string()), label.clone()).await {
+        let issues = match github::list_issues(
+            repo.clone(),
+            Some("open".to_string()),
+            label.clone(),
+        )
+        .await
+        {
             Ok(issues) => issues,
             Err(e) => {
-                let _ = app.emit("orchestrator-error", serde_json::json!({
-                    "error": format!("Failed to fetch issues: {}", e),
-                }));
+                let _ = app.emit(
+                    "orchestrator-error",
+                    serde_json::json!({
+                        "error": format!("Failed to fetch issues: {}", e),
+                    }),
+                );
                 tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
                 continue;
             }
         };
 
-        let open_prs = github::list_open_prs(repo.clone()).await.unwrap_or_default();
+        let open_prs = github::list_open_prs(repo.clone())
+            .await
+            .unwrap_or_default();
 
         // Build a map: issue_number -> PR exists
-        let mut issues_with_pr: std::collections::HashMap<u64, &github::PullRequest> = std::collections::HashMap::new();
+        let mut issues_with_pr: std::collections::HashMap<u64, &github::PullRequest> =
+            std::collections::HashMap::new();
         for pr in &open_prs {
-            let issue_num = pr.closes_issue
+            let issue_num = pr
+                .closes_issue
                 .or_else(|| github::parse_issue_from_title(&pr.title));
             if let Some(n) = issue_num {
                 issues_with_pr.insert(n, pr);
@@ -251,7 +287,8 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         // ---- STEP 2: Determine available slots ----
         let active_count = {
             let s = state.lock().await;
-            s.runs.values()
+            s.runs
+                .values()
                 .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
                 .count()
         };
@@ -264,17 +301,19 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         // ---- STEP 3: Filter issues that need work ----
         let (already_working, fully_done, has_any_run) = {
             let s = state.lock().await;
-            let working: Vec<u64> = s.runs.values()
+            let working: Vec<u64> = s
+                .runs
+                .values()
                 .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
                 .map(|r| r.issue_number)
                 .collect();
-            let done: Vec<u64> = s.runs.values()
+            let done: Vec<u64> = s
+                .runs
+                .values()
                 .filter(|r| r.stage == PipelineStage::Done && r.status == AgentStatus::Completed)
                 .map(|r| r.issue_number)
                 .collect();
-            let any: Vec<u64> = s.runs.values()
-                .map(|r| r.issue_number)
-                .collect();
+            let any: Vec<u64> = s.runs.values().map(|r| r.issue_number).collect();
             (working, done, any)
         };
 
@@ -287,7 +326,10 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             }
 
             // Skip already active, fully done, or already has a run
-            if already_working.contains(&issue.number) || fully_done.contains(&issue.number) || has_any_run.contains(&issue.number) {
+            if already_working.contains(&issue.number)
+                || fully_done.contains(&issue.number)
+                || has_any_run.contains(&issue.number)
+            {
                 continue;
             }
 
@@ -316,7 +358,9 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 title,
                 body,
                 stage.clone(),
-            ).await {
+            )
+            .await
+            {
                 let _ = app.emit("orchestrator-error", serde_json::json!({
                     "error": format!("Failed to launch {} agent for #{}: {}", stage, issue.number, e),
                 }));

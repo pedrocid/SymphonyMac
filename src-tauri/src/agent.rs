@@ -16,7 +16,13 @@ pub struct AgentLogLine {
     pub line: String,
 }
 
-fn build_prompt(stage: &PipelineStage, issue_number: u64, repo: &str, issue_title: &str, issue_body: &str) -> String {
+fn build_prompt(
+    stage: &PipelineStage,
+    issue_number: u64,
+    repo: &str,
+    issue_title: &str,
+    issue_body: &str,
+) -> String {
     match stage {
         PipelineStage::Implement => format!(
             "You are working on GitHub issue #{num} in repository {repo}.\n\n\
@@ -82,6 +88,23 @@ fn build_prompt(stage: &PipelineStage, issue_number: u64, repo: &str, issue_titl
             title = issue_title,
         ),
 
+        PipelineStage::Merge => format!(
+            "You are a release engineer for repository {repo}.\n\n\
+             A Pull Request for issue #{num}: {title} has passed code review and all tests.\n\n\
+             Instructions:\n\
+             1. Run: gh pr list -R {repo} --state open --json number,title,headRefName | to find the PR for issue #{num}\n\
+             2. Merge the PR into the default branch:\n\
+                gh pr merge <PR_NUMBER> -R {repo} --merge --delete-branch\n\
+             3. Close the issue if it wasn't auto-closed:\n\
+                gh issue close {num} -R {repo}\n\
+             4. Confirm the merge was successful by checking:\n\
+                gh pr view <PR_NUMBER> -R {repo} --json state\n\n\
+             Do NOT make any code changes. Only merge and close.",
+            repo = repo,
+            num = issue_number,
+            title = issue_title,
+        ),
+
         PipelineStage::Done => String::new(), // Should never be used
     }
 }
@@ -89,13 +112,12 @@ fn build_prompt(stage: &PipelineStage, issue_number: u64, repo: &str, issue_titl
 fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>) {
     match config.agent_type.as_str() {
         "codex" => {
-            let mut args = vec![
-                "--quiet".to_string(),
-                "--approval-mode".to_string(),
-                "full-auto".to_string(),
-            ];
+            let mut args = vec!["exec".to_string()];
+            if config.auto_approve {
+                args.push("--full-auto".to_string());
+            }
             args.push(prompt.to_string());
-            ("codex".to_string(), args)
+            (crate::paths::resolve("codex"), args)
         }
         _ => {
             let mut args = vec!["--print".to_string()];
@@ -103,7 +125,7 @@ fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>)
                 args.push("--dangerously-skip-permissions".to_string());
             }
             args.push(prompt.to_string());
-            ("claude".to_string(), args)
+            (crate::paths::resolve("claude"), args)
         }
     }
 }
@@ -148,11 +170,14 @@ pub async fn launch_agent(
         s.runs.insert(run_id.clone(), run);
     }
 
-    let _ = app.emit("agent-status-changed", serde_json::json!({
-        "run_id": &run_id,
-        "status": "preparing",
-        "stage": &stage_label,
-    }));
+    let _ = app.emit(
+        "agent-status-changed",
+        serde_json::json!({
+            "run_id": &run_id,
+            "status": "preparing",
+            "stage": &stage_label,
+        }),
+    );
 
     let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
     let (cmd, args) = build_command_args(&config, &prompt);
@@ -166,9 +191,19 @@ pub async fn launch_agent(
 
     tokio::spawn(async move {
         run_agent_process(
-            app_clone, state_clone, run_id_clone, cmd, args,
-            workspace_path, stage, repo_clone, issue_number, title_clone, body_clone,
-        ).await;
+            app_clone,
+            state_clone,
+            run_id_clone,
+            cmd,
+            args,
+            workspace_path,
+            stage,
+            repo_clone,
+            issue_number,
+            title_clone,
+            body_clone,
+        )
+        .await;
     });
 
     Ok(run_id)
@@ -209,6 +244,7 @@ async fn run_agent_process(
     issue_body: String,
 ) {
     let stage_label = stage.to_string();
+    let path_env = crate::paths::build_path_env();
 
     // Update status to running
     {
@@ -217,15 +253,19 @@ async fn run_agent_process(
             run.status = AgentStatus::Running;
         }
     }
-    let _ = app.emit("agent-status-changed", serde_json::json!({
-        "run_id": &run_id,
-        "status": "running",
-        "stage": &stage_label,
-    }));
+    let _ = app.emit(
+        "agent-status-changed",
+        serde_json::json!({
+            "run_id": &run_id,
+            "status": "running",
+            "stage": &stage_label,
+        }),
+    );
 
     let result = Command::new(&cmd)
         .args(&args)
         .current_dir(&workspace_path)
+        .env("PATH", &path_env)
         .env_remove("CLAUDECODE")
         .env_remove("CLAUDE_CODE_SESSION")
         .stdout(Stdio::piped())
@@ -244,11 +284,14 @@ async fn run_agent_process(
                 run.finished_at = Some(Utc::now().to_rfc3339());
                 run.logs.push(error_msg);
             }
-            let _ = app.emit("agent-status-changed", serde_json::json!({
-                "run_id": &run_id,
-                "status": "failed",
-                "stage": &stage_label,
-            }));
+            let _ = app.emit(
+                "agent-status-changed",
+                serde_json::json!({
+                    "run_id": &run_id,
+                    "status": "failed",
+                    "stage": &stage_label,
+                }),
+            );
             return;
         }
     };
@@ -331,27 +374,59 @@ async fn run_agent_process(
             } else {
                 run.status = AgentStatus::Failed;
                 run.error = Some(match &exit_status {
-                    Ok(status) => format!("Agent exited with code: {}", status.code().unwrap_or(-1)),
+                    Ok(status) => {
+                        format!("Agent exited with code: {}", status.code().unwrap_or(-1))
+                    }
                     Err(e) => format!("Agent process error: {}", e),
                 });
             }
         }
     }
 
-    let _ = app.emit("agent-status-changed", serde_json::json!({
-        "run_id": &run_id,
-        "status": if succeeded { "completed" } else { "failed" },
-        "stage": &stage_label,
-    }));
+    let _ = app.emit(
+        "agent-status-changed",
+        serde_json::json!({
+            "run_id": &run_id,
+            "status": if succeeded { "completed" } else { "failed" },
+            "stage": &stage_label,
+        }),
+    );
 
     // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
     if succeeded {
         let next_stage = match stage {
             PipelineStage::Implement => Some(PipelineStage::CodeReview),
             PipelineStage::CodeReview => Some(PipelineStage::Testing),
-            PipelineStage::Testing => {
-                // Testing passed → mark as Done (create a "done" run record)
+            PipelineStage::Testing => Some(PipelineStage::Merge),
+            PipelineStage::Merge => {
+                // Merge passed → mark as Done with aggregated logs from all stages
                 let done_id = Uuid::new_v4().to_string();
+                let aggregated_logs = {
+                    let s = state.lock().await;
+                    let stage_order = ["implement", "code_review", "testing", "merge"];
+                    let mut all_logs: Vec<String> = Vec::new();
+                    for stage_name in &stage_order {
+                        let stage_runs: Vec<&AgentRun> = s
+                            .runs
+                            .values()
+                            .filter(|r| {
+                                r.issue_number == issue_number && r.stage.to_string() == *stage_name
+                            })
+                            .collect();
+                        if let Some(run) =
+                            stage_runs.into_iter().max_by_key(|r| r.started_at.clone())
+                        {
+                            all_logs.push(format!(
+                                "═══ {} ═══",
+                                stage_name.to_uppercase().replace('_', " ")
+                            ));
+                            all_logs.extend(run.logs.iter().cloned());
+                            all_logs.push(String::new());
+                        }
+                    }
+                    all_logs.push("═══ PIPELINE COMPLETED ═══".to_string());
+                    all_logs
+                };
                 let done_run = AgentRun {
                     id: done_id.clone(),
                     repo: repo.clone(),
@@ -361,7 +436,7 @@ async fn run_agent_process(
                     stage: PipelineStage::Done,
                     started_at: Utc::now().to_rfc3339(),
                     finished_at: Some(Utc::now().to_rfc3339()),
-                    logs: vec!["Pipeline completed successfully. All stages passed.".to_string()],
+                    logs: aggregated_logs,
                     workspace_path: workspace_path.to_string_lossy().to_string(),
                     error: None,
                     attempt: 1,
@@ -370,11 +445,18 @@ async fn run_agent_process(
                     let mut s = state.lock().await;
                     s.runs.insert(done_id.clone(), done_run);
                 }
-                let _ = app.emit("agent-status-changed", serde_json::json!({
-                    "run_id": &done_id,
-                    "status": "completed",
-                    "stage": "done",
-                }));
+                let _ = app.emit(
+                    "agent-status-changed",
+                    serde_json::json!({
+                        "run_id": &done_id,
+                        "status": "completed",
+                        "stage": "done",
+                    }),
+                );
+
+                // Clean up the workspace clone
+                let _ = workspace::cleanup_workspace(&repo, issue_number);
+
                 None
             }
             PipelineStage::Done => None,
@@ -382,8 +464,14 @@ async fn run_agent_process(
 
         if let Some(next) = next_stage {
             spawn_next_stage(
-                app.clone(), state.clone(), repo, issue_number,
-                issue_title, issue_body, next, workspace_path,
+                app.clone(),
+                state.clone(),
+                repo,
+                issue_number,
+                issue_title,
+                issue_body,
+                next,
+                workspace_path,
             );
         }
     }
@@ -431,19 +519,32 @@ fn spawn_next_stage(
             s.runs.insert(run_id.clone(), run);
         }
 
-        let _ = app.emit("agent-status-changed", serde_json::json!({
-            "run_id": &run_id,
-            "status": "preparing",
-            "stage": &stage_label,
-        }));
+        let _ = app.emit(
+            "agent-status-changed",
+            serde_json::json!({
+                "run_id": &run_id,
+                "status": "preparing",
+                "stage": &stage_label,
+            }),
+        );
 
         let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body);
         let (cmd, args) = build_command_args(&config, &prompt);
 
         run_agent_process(
-            app, state, run_id, cmd, args,
-            workspace_path, stage, repo, issue_number, issue_title, issue_body,
-        ).await;
+            app,
+            state,
+            run_id,
+            cmd,
+            args,
+            workspace_path,
+            stage,
+            repo,
+            issue_number,
+            issue_title,
+            issue_body,
+        )
+        .await;
     });
 }
 
@@ -462,10 +563,13 @@ pub async fn stop_agent(
             run.status = AgentStatus::Stopped;
             run.finished_at = Some(Utc::now().to_rfc3339());
         }
-        let _ = app.emit("agent-status-changed", serde_json::json!({
-            "run_id": &run_id,
-            "status": "stopped",
-        }));
+        let _ = app.emit(
+            "agent-status-changed",
+            serde_json::json!({
+                "run_id": &run_id,
+                "status": "stopped",
+            }),
+        );
         Ok(())
     } else {
         Err("Agent not found or already finished".to_string())

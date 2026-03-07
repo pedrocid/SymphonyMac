@@ -57,6 +57,7 @@ const STAGE_LABELS: Record<string, string> = {
   implement: "Implementing",
   code_review: "Reviewing",
   testing: "Testing",
+  merge: "Merging",
 };
 
 export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void }) {
@@ -158,6 +159,7 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
   const implementCards: KanbanCard[] = [];
   const reviewCards: KanbanCard[] = [];
   const testingCards: KanbanCard[] = [];
+  const mergeCards: KanbanCard[] = [];
   const doneCards: KanbanCard[] = [];
   const failedCards: KanbanCard[] = [];
 
@@ -207,6 +209,7 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
         case "implement": implementCards.push(card); break;
         case "code_review": reviewCards.push(card); break;
         case "testing": testingCards.push(card); break;
+        case "merge": mergeCards.push(card); break;
         default: implementCards.push(card); break;
       }
     } else if (latestRun.status === "completed") {
@@ -214,7 +217,8 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
       switch (latestRun.stage) {
         case "implement": reviewCards.push({ ...card, runStatus: "waiting" }); break;
         case "code_review": testingCards.push({ ...card, runStatus: "waiting" }); break;
-        case "testing": doneCards.push(card); break;
+        case "testing": mergeCards.push({ ...card, runStatus: "waiting" }); break;
+        case "merge": doneCards.push(card); break;
         default: doneCards.push(card); break;
       }
     }
@@ -235,6 +239,7 @@ export function Dashboard({ onViewLogs }: { onViewLogs: (runId: string) => void 
     { id: "implement", title: "In Progress", color: "#d29922", items: implementCards },
     { id: "review", title: "Code Review", color: "#bc8cff", items: reviewCards },
     { id: "testing", title: "Testing", color: "#58a6ff", items: testingCards },
+    { id: "merge", title: "Merging", color: "#d2a8ff", items: mergeCards },
     { id: "done", title: "Done", color: "#3fb950", items: doneCards },
     { id: "failed", title: "Failed", color: "#f85149", items: failedCards },
   ];
