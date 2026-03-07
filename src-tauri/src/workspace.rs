@@ -208,8 +208,16 @@ pub async fn cleanup_old_workspaces(max_age_days: f64) -> Result<u32, String> {
 #[tauri::command]
 pub async fn cleanup_single_workspace(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
-    if p.exists() {
-        std::fs::remove_dir_all(p)
+    let root = workspace_root();
+    let canonical_path = p.canonicalize()
+        .map_err(|e| format!("Invalid workspace path: {}", e))?;
+    let canonical_root = root.canonicalize()
+        .map_err(|e| format!("Workspace root not found: {}", e))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err("Path is outside the workspace directory".to_string());
+    }
+    if canonical_path.exists() {
+        std::fs::remove_dir_all(&canonical_path)
             .map_err(|e| format!("Failed to remove workspace: {}", e))?;
     }
     Ok(())
