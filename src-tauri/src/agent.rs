@@ -407,7 +407,7 @@ async fn run_agent_process(
         }),
     );
 
-    // Send notification on failure
+    // Send notification on failure and optionally cleanup workspace
     if !succeeded {
         let s = state.lock().await;
         if s.config.notifications_enabled {
@@ -418,8 +418,12 @@ async fn run_agent_process(
                 s.config.notification_sound,
             );
         }
+        let should_cleanup = s.config.cleanup_on_failure;
         drop(s);
         update_dock_badge(&state).await;
+        if should_cleanup {
+            let _ = workspace::cleanup_workspace(&repo, issue_number);
+        }
     }
 
     // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
@@ -634,10 +638,14 @@ pub async fn stop_agent(
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }
+        let mut repo_issue: Option<(String, u64)> = None;
         if let Some(run) = s.runs.get_mut(&run_id) {
             run.status = AgentStatus::Stopped;
             run.finished_at = Some(Utc::now().to_rfc3339());
+            repo_issue = Some((run.repo.clone(), run.issue_number));
         }
+        let should_cleanup = s.config.cleanup_on_stop;
+        drop(s);
         let _ = app.emit(
             "agent-status-changed",
             serde_json::json!({
@@ -645,6 +653,11 @@ pub async fn stop_agent(
                 "status": "stopped",
             }),
         );
+        if should_cleanup {
+            if let Some((repo, issue_number)) = repo_issue {
+                let _ = workspace::cleanup_workspace(&repo, issue_number);
+            }
+        }
         Ok(())
     } else {
         Err("Agent not found or already finished".to_string())

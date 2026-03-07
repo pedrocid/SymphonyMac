@@ -65,6 +65,9 @@ pub struct RunConfig {
     pub max_turns: u32,
     pub notifications_enabled: bool,
     pub notification_sound: bool,
+    pub cleanup_on_failure: bool,
+    pub cleanup_on_stop: bool,
+    pub workspace_ttl_days: u32,
 }
 
 impl Default for RunConfig {
@@ -78,6 +81,9 @@ impl Default for RunConfig {
             max_turns: 1,
             notifications_enabled: true,
             notification_sound: true,
+            cleanup_on_failure: false,
+            cleanup_on_stop: false,
+            workspace_ttl_days: 7,
         }
     }
 }
