@@ -77,8 +77,8 @@ function formatElapsed(startedAt: string, finishedAt: string | null): string {
   return `${hours}h ${mins % 60}m`;
 }
 
-function getPipelineTotal(runs: AgentRun[], issueNumber: number): string {
-  const issueRuns = runs.filter((r) => r.issue_number === issueNumber);
+function getPipelineTotal(runs: AgentRun[], repo: string, issueNumber: number): string {
+  const issueRuns = runs.filter((r) => r.repo === repo && r.issue_number === issueNumber);
   if (issueRuns.length === 0) return "0s";
   const earliest = issueRuns.reduce((min, r) =>
     new Date(r.started_at) < new Date(min.started_at) ? r : min
@@ -314,7 +314,7 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
                     <span>Stage: {formatElapsed(run.started_at, run.finished_at)}</span>
                   </div>
                   <div>
-                    <span>Pipeline: {getPipelineTotal(status.runs, run.issue_number)}</span>
+                    <span>Pipeline: {getPipelineTotal(status.runs, run.repo, run.issue_number)}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <span className="text-[#484f58]">{run.log_count || liveEntries.length} lines</span>

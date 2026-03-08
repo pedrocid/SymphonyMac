@@ -208,7 +208,9 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   function makeCard(issue: Issue | null, run: AgentRun | null, repo?: string): KanbanCard {
     // Collect skipped stages from all runs for this issue
     const issueNum = issue?.number || run?.issue_number || 0;
-    const allIssueRuns = allRunsByIssue.get(issueNum) || [];
+    const issueRepo = repo || run?.repo || issue?._repo || "";
+    const issueKey = `${issueRepo}:${issueNum}`;
+    const allIssueRuns = allRunsByIssue.get(issueKey) || [];
     const skipped = run?.skipped_stages?.length
       ? run.skipped_stages
       : allIssueRuns.find((r) => r.skipped_stages?.length)?.skipped_stages || [];

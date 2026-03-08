@@ -361,11 +361,11 @@ impl OrchestratorState {
         crate::persistence::save_state(self);
     }
 
-    /// Get the latest run for a given issue number
-    pub fn latest_run_for_issue(&self, issue_number: u64) -> Option<&AgentRun> {
+    /// Get the latest run for a given repo and issue number
+    pub fn latest_run_for_issue(&self, repo: &str, issue_number: u64) -> Option<&AgentRun> {
         self.runs
             .values()
-            .filter(|r| r.issue_number == issue_number)
+            .filter(|r| r.repo == repo && r.issue_number == issue_number)
             .max_by_key(|r| r.started_at.clone())
     }
 }
