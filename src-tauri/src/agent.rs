@@ -443,6 +443,7 @@ pub async fn launch_agent(
     issue_title: String,
     issue_body: String,
     stage: PipelineStage,
+    issue_labels: Vec<String>,
 ) -> Result<String, String> {
     let run_id = Uuid::new_v4().to_string();
     let config = {
@@ -455,6 +456,9 @@ pub async fn launch_agent(
     let stage_label = stage.to_string();
 
     let max_retries = config.max_retries;
+
+    let skipped = crate::orchestrator::compute_skipped_stages(&issue_labels, &config.stage_skip_labels);
+    let skipped_stage_names: Vec<String> = skipped.iter().map(|s| s.to_string()).collect();
 
     let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "");
     let (cmd, args) = build_command_args(&config, &prompt);
@@ -487,6 +491,8 @@ pub async fn launch_agent(
         output_tokens: 0,
         cost_usd: 0.0,
         last_log_timestamp: None,
+        issue_labels: issue_labels.clone(),
+        skipped_stages: skipped_stage_names,
     };
 
     {
@@ -525,6 +531,7 @@ pub async fn launch_agent(
     let repo_clone = repo.clone();
     let title_clone = issue_title.clone();
     let body_clone = issue_body.clone();
+    let labels_clone = issue_labels.clone();
 
     tokio::spawn(async move {
         run_agent_process(
@@ -539,6 +546,7 @@ pub async fn launch_agent(
             issue_number,
             title_clone,
             body_clone,
+            labels_clone,
         )
         .await;
     });
@@ -554,6 +562,7 @@ pub async fn start_single_issue(
     issue_number: u64,
     issue_title: String,
     issue_body: Option<String>,
+    issue_labels: Option<Vec<String>>,
 ) -> Result<String, String> {
     launch_agent(
         app,
@@ -563,6 +572,7 @@ pub async fn start_single_issue(
         issue_title,
         issue_body.unwrap_or_default(),
         PipelineStage::Implement,
+        issue_labels.unwrap_or_default(),
     )
     .await
 }
@@ -579,6 +589,7 @@ async fn run_agent_process(
     issue_number: u64,
     issue_title: String,
     issue_body: String,
+    issue_labels: Vec<String>,
 ) {
     let stage_label = stage.to_string();
     let path_env = crate::paths::build_path_env();
@@ -972,6 +983,7 @@ async fn run_agent_process(
                 max_retries,
                 retry_backoff,
                 error_log,
+                issue_labels.clone(),
             );
         } else {
             let s = state.lock().await;
@@ -1120,6 +1132,7 @@ async fn run_agent_process(
                 max_retries,
                 retry_backoff,
                 error_log,
+                issue_labels.clone(),
             );
             return;
         }
@@ -1145,10 +1158,35 @@ async fn run_agent_process(
 
     // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
     if succeeded {
+        // Compute which stages to skip based on issue labels
+        let skipped_stages = {
+            let s = state.lock().await;
+            crate::orchestrator::compute_skipped_stages(&issue_labels, &s.config.stage_skip_labels)
+        };
+
         let next_stage = match stage {
-            PipelineStage::Implement => Some(PipelineStage::CodeReview),
-            PipelineStage::CodeReview => Some(PipelineStage::Testing),
-            PipelineStage::Testing => Some(PipelineStage::Merge),
+            PipelineStage::Implement | PipelineStage::CodeReview | PipelineStage::Testing => {
+                let next = crate::orchestrator::next_pipeline_stage(&stage, &skipped_stages);
+                if let Some(ref next_s) = next {
+                    // Log skipped stages
+                    let default_chain: &[PipelineStage] = match stage {
+                        PipelineStage::Implement => &[PipelineStage::CodeReview, PipelineStage::Testing],
+                        PipelineStage::CodeReview => &[PipelineStage::Testing],
+                        _ => &[],
+                    };
+                    for s in default_chain {
+                        if skipped_stages.contains(s) && s != next_s {
+                            let msg = format!("[pipeline] Skipping {} stage (label rule)", s);
+                            logs::append_log_line(&run_id, &msg);
+                            let mut st = state.lock().await;
+                            if let Some(run) = st.runs.get_mut(&run_id) {
+                                run.logs.push(msg);
+                            }
+                        }
+                    }
+                }
+                next
+            }
             PipelineStage::Merge => {
                 // Verify the PR was actually merged before advancing to Done
                 let merge_verified =
@@ -1263,6 +1301,7 @@ async fn run_agent_process(
                     (inp, out, cost)
                 };
 
+                let done_skipped: Vec<String> = skipped_stages.iter().map(|s| s.to_string()).collect();
                 let done_run = AgentRun {
                     id: done_id.clone(),
                     repo: repo.clone(),
@@ -1290,6 +1329,8 @@ async fn run_agent_process(
                     output_tokens: total_output,
                     cost_usd: total_cost,
                     last_log_timestamp: None,
+                    issue_labels: issue_labels.clone(),
+                    skipped_stages: done_skipped,
                 };
                 {
                     let mut s = state.lock().await;
@@ -1347,6 +1388,7 @@ async fn run_agent_process(
                 issue_body,
                 next,
                 workspace_path,
+                issue_labels,
             );
         }
     }
@@ -1362,6 +1404,7 @@ fn spawn_next_stage(
     issue_body: String,
     stage: PipelineStage,
     workspace_path: std::path::PathBuf,
+    issue_labels: Vec<String>,
 ) {
     let stage_label = stage.to_string();
 
@@ -1442,6 +1485,9 @@ fn spawn_next_stage(
             s.config.clone()
         };
 
+        let skipped = crate::orchestrator::compute_skipped_stages(&issue_labels, &config.stage_skip_labels);
+        let skipped_stage_names: Vec<String> = skipped.iter().map(|s| s.to_string()).collect();
+
         let run = AgentRun {
             id: run_id.clone(),
             repo: repo.clone(),
@@ -1469,6 +1515,8 @@ fn spawn_next_stage(
             output_tokens: 0,
             cost_usd: 0.0,
             last_log_timestamp: None,
+            issue_labels: issue_labels.clone(),
+            skipped_stages: skipped_stage_names,
         };
 
         {
@@ -1526,6 +1574,7 @@ fn spawn_next_stage(
             issue_number,
             issue_title,
             issue_body,
+            issue_labels,
         )
         .await;
     });
@@ -1545,6 +1594,7 @@ fn spawn_retry(
     max_retries: u32,
     backoff_secs: u64,
     previous_error: String,
+    issue_labels: Vec<String>,
 ) {
     let stage_label = stage.to_string();
 
@@ -1572,6 +1622,9 @@ fn spawn_retry(
             let s = state.lock().await;
             s.config.clone()
         };
+
+        let skipped = crate::orchestrator::compute_skipped_stages(&issue_labels, &config.stage_skip_labels);
+        let skipped_stage_names: Vec<String> = skipped.iter().map(|s| s.to_string()).collect();
 
         let run = AgentRun {
             id: run_id.clone(),
@@ -1605,6 +1658,8 @@ fn spawn_retry(
             output_tokens: 0,
             cost_usd: 0.0,
             last_log_timestamp: None,
+            issue_labels: issue_labels.clone(),
+            skipped_stages: skipped_stage_names,
         };
 
         {
@@ -1648,6 +1703,7 @@ fn spawn_retry(
             issue_number,
             issue_title,
             issue_body,
+            issue_labels,
         )
         .await;
     });
@@ -1729,7 +1785,7 @@ pub async fn retry_agent(
     state: tauri::State<'_, SharedState>,
     run_id: String,
 ) -> Result<String, String> {
-    let (repo, issue_number, issue_title, issue_body, stage) = {
+    let (repo, issue_number, issue_title, issue_body, stage, labels) = {
         let s = state.lock().await;
         let run = s
             .runs
@@ -1744,13 +1800,14 @@ pub async fn retry_agent(
             run.issue_title.clone(),
             String::new(), // body is not stored in the run; will be fetched from issue
             run.stage.clone(),
+            run.issue_labels.clone(),
         )
     };
 
-    // Try to fetch the issue body from GitHub
-    let body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
-        Ok(issue) => issue.body.unwrap_or_default(),
-        Err(_) => issue_body,
+    // Try to fetch the issue body and labels from GitHub
+    let (body, issue_labels) = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
+        Err(_) => (issue_body, labels),
     };
 
     launch_agent(
@@ -1761,6 +1818,7 @@ pub async fn retry_agent(
         issue_title,
         body,
         stage,
+        issue_labels,
     )
     .await
 }

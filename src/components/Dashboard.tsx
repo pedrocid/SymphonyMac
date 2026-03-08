@@ -16,6 +16,8 @@ interface AgentRun {
   attempt: number;
   max_retries: number;
   logs: string[];
+  issue_labels: string[];
+  skipped_stages: string[];
 }
 
 interface Issue {
@@ -59,6 +61,7 @@ type KanbanCard = {
   attempt?: number;
   maxRetries?: number;
   blockedBy?: number[];
+  skippedStages?: string[];
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -132,6 +135,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       await invoke("start_single_issue", {
         repo: status.repo, issueNumber: issue.number,
         issueTitle: issue.title, issueBody: issue.body,
+        issueLabels: issue.labels,
       });
       loadStatus();
     } catch (e) { setError(String(e)); }
@@ -195,9 +199,16 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const failedCards: KanbanCard[] = [];
 
   function makeCard(issue: Issue | null, run: AgentRun | null): KanbanCard {
+    // Collect skipped stages from all runs for this issue
+    const issueNum = issue?.number || run?.issue_number || 0;
+    const allIssueRuns = allRunsByIssue.get(issueNum) || [];
+    const skipped = run?.skipped_stages?.length
+      ? run.skipped_stages
+      : allIssueRuns.find((r) => r.skipped_stages?.length)?.skipped_stages || [];
+
     return {
       id: run?.id || `issue-${issue?.number}`,
-      number: issue?.number || run?.issue_number || 0,
+      number: issueNum,
       title: issue?.title || run?.issue_title || "",
       labels: issue?.labels || [],
       assignee: issue?.assignee || null,
@@ -209,6 +220,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       elapsed: run ? formatElapsed(run.started_at, run.finished_at) : undefined,
       attempt: run?.attempt,
       maxRetries: run?.max_retries,
+      skippedStages: skipped,
     };
   }
 
@@ -404,6 +416,15 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className="text-xs text-[#da3633]">
                           Blocked by {card.blockedBy.map((n) => `#${n}`).join(", ")}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Skipped stages */}
+                    {card.skippedStages && card.skippedStages.length > 0 && (
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className="text-xs text-[#d29922]">
+                          Skipped: {card.skippedStages.map((s) => s.replace("_", " ")).join(", ")}
                         </span>
                       </div>
                     )}

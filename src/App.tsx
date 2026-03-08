@@ -39,6 +39,7 @@ export interface RunConfig {
   hooks: LifecycleHooks;
   priority_labels: string[];
   stall_timeout_secs: number;
+  stage_skip_labels: Record<string, string[]>;
 }
 
 function App() {

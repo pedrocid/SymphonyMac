@@ -74,6 +74,12 @@ pub struct AgentRun {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
+    /// Labels from the GitHub issue, used for stage-skip logic
+    #[serde(default)]
+    pub issue_labels: Vec<String>,
+    /// Stages that were skipped for this issue based on label rules
+    #[serde(default)]
+    pub skipped_stages: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +144,12 @@ pub struct RunConfig {
     /// Default: 300 (5 minutes).
     #[serde(default = "default_stall_timeout")]
     pub stall_timeout_secs: u64,
+    /// Label-to-stage skip mappings. When an issue has a label matching a key,
+    /// the listed stages are skipped during auto-chaining.
+    /// Only CodeReview and Testing can be skipped; Implement and Merge are always required.
+    /// Default: {"skip:code-review": ["code_review"], "skip:testing": ["testing"], "docs-only": ["code_review", "testing"]}
+    #[serde(default = "default_stage_skip_labels")]
+    pub stage_skip_labels: HashMap<String, Vec<String>>,
 }
 
 fn default_priority_labels() -> Vec<String> {
@@ -151,6 +163,20 @@ fn default_priority_labels() -> Vec<String> {
 
 fn default_stall_timeout() -> u64 {
     300
+}
+
+fn default_stage_skip_labels() -> HashMap<String, Vec<String>> {
+    let mut m = HashMap::new();
+    m.insert(
+        "skip:code-review".to_string(),
+        vec!["code_review".to_string()],
+    );
+    m.insert("skip:testing".to_string(), vec!["testing".to_string()]);
+    m.insert(
+        "docs-only".to_string(),
+        vec!["code_review".to_string(), "testing".to_string()],
+    );
+    m
 }
 
 fn default_retry_base_delay() -> u64 {
@@ -184,8 +210,58 @@ impl Default for RunConfig {
             hooks: LifecycleHooks::default(),
             priority_labels: default_priority_labels(),
             stall_timeout_secs: default_stall_timeout(),
+            stage_skip_labels: default_stage_skip_labels(),
         }
     }
+}
+
+/// Given an issue's labels and the configured skip-label mappings, return the
+/// list of pipeline stages that should be skipped for this issue.
+/// Only CodeReview and Testing can be skipped.
+pub fn compute_skipped_stages(
+    issue_labels: &[String],
+    skip_labels: &HashMap<String, Vec<String>>,
+) -> Vec<PipelineStage> {
+    let mut skipped = Vec::new();
+    for label in issue_labels {
+        let label_lower = label.to_lowercase();
+        for (skip_label, stages) in skip_labels {
+            if label_lower == skip_label.to_lowercase() {
+                for stage_name in stages {
+                    let stage = match stage_name.as_str() {
+                        "code_review" => PipelineStage::CodeReview,
+                        "testing" => PipelineStage::Testing,
+                        _ => continue, // Implement and Merge cannot be skipped
+                    };
+                    if !skipped.contains(&stage) {
+                        skipped.push(stage);
+                    }
+                }
+            }
+        }
+    }
+    skipped
+}
+
+/// Return the next pipeline stage after `current`, skipping any stages in `skipped`.
+/// Returns None if there is no next stage (i.e. current is Merge or Done).
+pub fn next_pipeline_stage(
+    current: &PipelineStage,
+    skipped: &[PipelineStage],
+) -> Option<PipelineStage> {
+    let chain = [
+        PipelineStage::Implement,
+        PipelineStage::CodeReview,
+        PipelineStage::Testing,
+        PipelineStage::Merge,
+    ];
+    let current_idx = chain.iter().position(|s| s == current)?;
+    for next in &chain[current_idx + 1..] {
+        if !skipped.contains(next) {
+            return Some(next.clone());
+        }
+    }
+    None
 }
 
 /// Returns the priority rank of an issue based on its labels and the configured priority ordering.
@@ -599,7 +675,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
     let mut all_processed_notified = false;
 
     loop {
-        let (should_stop, poll_interval, max_concurrent, label, stage_limits, priority_labels) = {
+        let (should_stop, poll_interval, max_concurrent, label, stage_limits, priority_labels, skip_labels) = {
             let s = state.lock().await;
             (
                 s.stop_flag,
@@ -608,6 +684,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 s.config.issue_label.clone(),
                 s.config.max_concurrent_by_stage.clone(),
                 s.config.priority_labels.clone(),
+                s.config.stage_skip_labels.clone(),
             )
         };
 
@@ -761,16 +838,24 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 }
             }
 
+            // Compute which stages to skip based on issue labels
+            let skipped = compute_skipped_stages(&issue.labels, &skip_labels);
+
             // Decide which stage to start at
             let (stage, title, body) = if let Some(pr) = issues_with_pr.get(&issue.number) {
-                // This issue already has a PR → start at Code Review
+                // This issue already has a PR → start at Code Review (or next non-skipped)
+                let mut start = PipelineStage::CodeReview;
+                if skipped.contains(&start) {
+                    start = next_pipeline_stage(&PipelineStage::Implement, &skipped)
+                        .unwrap_or(PipelineStage::Merge);
+                }
                 (
-                    PipelineStage::CodeReview,
+                    start,
                     pr.title.clone(),
                     pr.body.clone().unwrap_or_default(),
                 )
             } else {
-                // No PR → start at Implement
+                // No PR → start at Implement (always required)
                 (
                     PipelineStage::Implement,
                     issue.title.clone(),
@@ -798,6 +883,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 title,
                 body,
                 stage.clone(),
+                issue.labels.clone(),
             )
             .await
             {
@@ -978,5 +1064,112 @@ mod tests {
 
         let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
         assert_eq!(numbers, vec![2, 1, 3]);
+    }
+
+    #[test]
+    fn test_compute_skipped_stages_skip_testing() {
+        let skip_labels = default_stage_skip_labels();
+        let issue_labels = vec!["skip:testing".to_string()];
+        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
+        assert_eq!(skipped, vec![PipelineStage::Testing]);
+    }
+
+    #[test]
+    fn test_compute_skipped_stages_skip_code_review() {
+        let skip_labels = default_stage_skip_labels();
+        let issue_labels = vec!["skip:code-review".to_string()];
+        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
+        assert_eq!(skipped, vec![PipelineStage::CodeReview]);
+    }
+
+    #[test]
+    fn test_compute_skipped_stages_docs_only() {
+        let skip_labels = default_stage_skip_labels();
+        let issue_labels = vec!["docs-only".to_string()];
+        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
+        assert!(skipped.contains(&PipelineStage::CodeReview));
+        assert!(skipped.contains(&PipelineStage::Testing));
+        assert_eq!(skipped.len(), 2);
+    }
+
+    #[test]
+    fn test_compute_skipped_stages_case_insensitive() {
+        let skip_labels = default_stage_skip_labels();
+        let issue_labels = vec!["Skip:Testing".to_string()];
+        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
+        assert_eq!(skipped, vec![PipelineStage::Testing]);
+    }
+
+    #[test]
+    fn test_compute_skipped_stages_no_matching_labels() {
+        let skip_labels = default_stage_skip_labels();
+        let issue_labels = vec!["bug".to_string(), "priority:high".to_string()];
+        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn test_compute_skipped_stages_cannot_skip_implement_or_merge() {
+        let mut skip_labels = HashMap::new();
+        skip_labels.insert(
+            "skip-all".to_string(),
+            vec![
+                "implement".to_string(),
+                "code_review".to_string(),
+                "testing".to_string(),
+                "merge".to_string(),
+            ],
+        );
+        let issue_labels = vec!["skip-all".to_string()];
+        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
+        // Only CodeReview and Testing can be skipped
+        assert!(skipped.contains(&PipelineStage::CodeReview));
+        assert!(skipped.contains(&PipelineStage::Testing));
+        assert_eq!(skipped.len(), 2);
+    }
+
+    #[test]
+    fn test_next_pipeline_stage_no_skips() {
+        let skipped = vec![];
+        assert_eq!(
+            next_pipeline_stage(&PipelineStage::Implement, &skipped),
+            Some(PipelineStage::CodeReview)
+        );
+        assert_eq!(
+            next_pipeline_stage(&PipelineStage::CodeReview, &skipped),
+            Some(PipelineStage::Testing)
+        );
+        assert_eq!(
+            next_pipeline_stage(&PipelineStage::Testing, &skipped),
+            Some(PipelineStage::Merge)
+        );
+        assert_eq!(next_pipeline_stage(&PipelineStage::Merge, &skipped), None);
+    }
+
+    #[test]
+    fn test_next_pipeline_stage_skip_code_review() {
+        let skipped = vec![PipelineStage::CodeReview];
+        assert_eq!(
+            next_pipeline_stage(&PipelineStage::Implement, &skipped),
+            Some(PipelineStage::Testing)
+        );
+    }
+
+    #[test]
+    fn test_next_pipeline_stage_skip_both() {
+        let skipped = vec![PipelineStage::CodeReview, PipelineStage::Testing];
+        assert_eq!(
+            next_pipeline_stage(&PipelineStage::Implement, &skipped),
+            Some(PipelineStage::Merge)
+        );
+    }
+
+    #[test]
+    fn test_next_pipeline_stage_skip_testing() {
+        let skipped = vec![PipelineStage::Testing];
+        assert_eq!(
+            next_pipeline_stage(&PipelineStage::CodeReview, &skipped),
+            Some(PipelineStage::Merge)
+        );
     }
 }
