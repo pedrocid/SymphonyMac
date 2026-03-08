@@ -116,6 +116,21 @@ pub struct RunConfig {
     pub stage_prompts: HashMap<String, String>,
     #[serde(default)]
     pub hooks: LifecycleHooks,
+    /// Priority label ordering for dispatch sorting.
+    /// Labels listed first have higher priority (dispatched first).
+    /// Issues without any priority label are dispatched last.
+    /// Default: ["priority:critical", "priority:high", "priority:medium", "priority:low"]
+    #[serde(default = "default_priority_labels")]
+    pub priority_labels: Vec<String>,
+}
+
+fn default_priority_labels() -> Vec<String> {
+    vec![
+        "priority:critical".to_string(),
+        "priority:high".to_string(),
+        "priority:medium".to_string(),
+        "priority:low".to_string(),
+    ]
 }
 
 impl Default for RunConfig {
@@ -137,8 +152,35 @@ impl Default for RunConfig {
             max_concurrent_by_stage: HashMap::new(),
             stage_prompts: HashMap::new(),
             hooks: LifecycleHooks::default(),
+            priority_labels: default_priority_labels(),
         }
     }
+}
+
+/// Returns the priority rank of an issue based on its labels and the configured priority ordering.
+/// Lower rank = higher priority. Issues without any priority label get `usize::MAX`.
+fn issue_priority_rank(issue: &crate::github::Issue, priority_labels: &[String]) -> usize {
+    for label in &issue.labels {
+        let label_lower = label.to_lowercase();
+        for (rank, priority) in priority_labels.iter().enumerate() {
+            if label_lower == priority.to_lowercase() {
+                return rank;
+            }
+        }
+    }
+    usize::MAX
+}
+
+/// Sort issues for dispatch: priority labels ascending, created_at oldest first, issue number as tiebreaker.
+fn sort_issues_for_dispatch(issues: &mut [crate::github::Issue], priority_labels: &[String]) {
+    issues.sort_by(|a, b| {
+        let rank_a = issue_priority_rank(a, priority_labels);
+        let rank_b = issue_priority_rank(b, priority_labels);
+        rank_a
+            .cmp(&rank_b)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+            .then_with(|| a.number.cmp(&b.number))
+    });
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,7 +385,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
     let mut all_processed_notified = false;
 
     loop {
-        let (should_stop, poll_interval, max_concurrent, label, stage_limits) = {
+        let (should_stop, poll_interval, max_concurrent, label, stage_limits, priority_labels) = {
             let s = state.lock().await;
             (
                 s.stop_flag,
@@ -351,6 +393,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 s.config.max_concurrent,
                 s.config.issue_label.clone(),
                 s.config.max_concurrent_by_stage.clone(),
+                s.config.priority_labels.clone(),
             )
         };
 
@@ -366,7 +409,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         );
 
         // ---- STEP 1: Fetch issues and PRs in parallel ----
-        let issues = match github::list_issues(
+        let mut issues = match github::list_issues(
             repo.clone(),
             Some("open".to_string()),
             label.clone(),
@@ -385,6 +428,9 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 continue;
             }
         };
+
+        // Sort issues by priority labels, then created_at (oldest first), then issue number
+        sort_issues_for_dispatch(&mut issues, &priority_labels);
 
         let open_prs = github::list_open_prs(repo.clone())
             .await
@@ -601,4 +647,110 @@ pub fn can_launch_stage(state: &OrchestratorState, stage: &PipelineStage) -> boo
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::Issue;
+
+    fn make_issue(number: u64, labels: Vec<&str>, created_at: &str) -> Issue {
+        Issue {
+            number,
+            title: format!("Issue #{}", number),
+            body: None,
+            state: "OPEN".to_string(),
+            labels: labels.into_iter().map(|s| s.to_string()).collect(),
+            assignee: None,
+            url: String::new(),
+            created_at: created_at.to_string(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_priority_rank_critical_is_first() {
+        let labels = default_priority_labels();
+        let issue = make_issue(1, vec!["priority:critical"], "2024-01-01T00:00:00Z");
+        assert_eq!(issue_priority_rank(&issue, &labels), 0);
+    }
+
+    #[test]
+    fn test_priority_rank_low_is_last_defined() {
+        let labels = default_priority_labels();
+        let issue = make_issue(1, vec!["priority:low"], "2024-01-01T00:00:00Z");
+        assert_eq!(issue_priority_rank(&issue, &labels), 3);
+    }
+
+    #[test]
+    fn test_priority_rank_no_label_is_max() {
+        let labels = default_priority_labels();
+        let issue = make_issue(1, vec!["bug"], "2024-01-01T00:00:00Z");
+        assert_eq!(issue_priority_rank(&issue, &labels), usize::MAX);
+    }
+
+    #[test]
+    fn test_priority_rank_case_insensitive() {
+        let labels = default_priority_labels();
+        let issue = make_issue(1, vec!["Priority:Critical"], "2024-01-01T00:00:00Z");
+        assert_eq!(issue_priority_rank(&issue, &labels), 0);
+    }
+
+    #[test]
+    fn test_sort_by_priority_then_date_then_number() {
+        let labels = default_priority_labels();
+        let mut issues = vec![
+            make_issue(3, vec!["priority:low"], "2024-01-01T00:00:00Z"),
+            make_issue(1, vec!["priority:critical"], "2024-01-02T00:00:00Z"),
+            make_issue(2, vec!["priority:high"], "2024-01-01T00:00:00Z"),
+            make_issue(4, vec![], "2024-01-01T00:00:00Z"),
+            make_issue(5, vec!["priority:critical"], "2024-01-01T00:00:00Z"),
+        ];
+        sort_issues_for_dispatch(&mut issues, &labels);
+
+        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
+        // critical oldest first (5 before 1), then high (2), then low (3), then unlabeled (4)
+        assert_eq!(numbers, vec![5, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_sort_same_priority_same_date_uses_number() {
+        let labels = default_priority_labels();
+        let mut issues = vec![
+            make_issue(10, vec!["priority:high"], "2024-01-01T00:00:00Z"),
+            make_issue(5, vec!["priority:high"], "2024-01-01T00:00:00Z"),
+        ];
+        sort_issues_for_dispatch(&mut issues, &labels);
+
+        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
+        assert_eq!(numbers, vec![5, 10]);
+    }
+
+    #[test]
+    fn test_sort_unlabeled_fifo() {
+        let labels = default_priority_labels();
+        let mut issues = vec![
+            make_issue(3, vec![], "2024-01-03T00:00:00Z"),
+            make_issue(1, vec![], "2024-01-01T00:00:00Z"),
+            make_issue(2, vec![], "2024-01-02T00:00:00Z"),
+        ];
+        sort_issues_for_dispatch(&mut issues, &labels);
+
+        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
+        assert_eq!(numbers, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_sort_custom_priority_labels() {
+        let labels = vec!["urgent".to_string(), "normal".to_string()];
+        let mut issues = vec![
+            make_issue(1, vec!["normal"], "2024-01-01T00:00:00Z"),
+            make_issue(2, vec!["urgent"], "2024-01-01T00:00:00Z"),
+            make_issue(3, vec![], "2024-01-01T00:00:00Z"),
+        ];
+        sort_issues_for_dispatch(&mut issues, &labels);
+
+        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
+        assert_eq!(numbers, vec![2, 1, 3]);
+    }
 }

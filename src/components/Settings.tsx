@@ -43,6 +43,7 @@ export function Settings() {
       before_remove: null,
       timeout_secs: 60,
     },
+    priority_labels: ["priority:critical", "priority:high", "priority:medium", "priority:low"],
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -340,6 +341,36 @@ export function Settings() {
                   Only process issues with this label. Leave empty for all issues.
                 </p>
               </div>
+            </div>
+          </div>
+
+          {/* Priority Labels */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-4">Dispatch Priority</h3>
+            <div>
+              <label className="block text-sm text-[#8b949e] mb-2">
+                Priority Labels (highest priority first)
+              </label>
+              <input
+                type="text"
+                placeholder="priority:critical, priority:high, priority:medium, priority:low"
+                value={config.priority_labels.join(", ")}
+                onChange={(e) =>
+                  setConfig({
+                    ...config,
+                    priority_labels: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter((s) => s.length > 0),
+                  })
+                }
+                className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58]"
+              />
+              <p className="text-xs text-[#8b949e] mt-1">
+                Comma-separated list of labels. Issues with labels listed first are dispatched first.
+                Issues without any priority label are dispatched last. Within the same priority,
+                older issues are dispatched first.
+              </p>
             </div>
           </div>
 
