@@ -324,6 +324,13 @@ pub struct RunConfig {
     /// testing, merge). Default: all false (fully automatic).
     #[serde(default)]
     pub approval_gates: HashMap<String, bool>,
+    /// Custom agent command template. Used when `agent_type` is `"custom"`.
+    /// The first whitespace-separated token is the binary; the rest are arguments.
+    /// Use `{{prompt}}` as a placeholder for where the prompt should be inserted.
+    /// If no `{{prompt}}` placeholder is present, the prompt is appended as the last argument.
+    /// Example: `aider --yes-always {{prompt}}`
+    #[serde(default)]
+    pub custom_agent_command: String,
 }
 
 fn default_priority_labels() -> Vec<String> {
@@ -386,6 +393,7 @@ impl Default for RunConfig {
             stall_timeout_secs: default_stall_timeout(),
             stage_skip_labels: default_stage_skip_labels(),
             approval_gates: HashMap::new(),
+            custom_agent_command: String::new(),
         }
     }
 }

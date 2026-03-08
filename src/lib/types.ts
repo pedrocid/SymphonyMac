@@ -29,6 +29,7 @@ export interface RunConfig {
   stall_timeout_secs: number;
   stage_skip_labels: Record<string, string[]>;
   approval_gates: Record<string, boolean>;
+  custom_agent_command: string;
 }
 
 export interface AgentRun {
