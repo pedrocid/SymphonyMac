@@ -105,6 +105,10 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try { await invoke("stop_agent", { runId }); loadStatus(); } catch (_) {}
   }
 
+  async function retryAgent(runId: string) {
+    try { await invoke("retry_agent", { runId }); loadStatus(); } catch (e) { setError(String(e)); }
+  }
+
   async function launchIssue(issue: Issue) {
     if (!status?.repo) return;
     try {
@@ -370,6 +374,12 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                           <button onClick={(e) => { e.stopPropagation(); stopAgent(card.runId!); }}
                             className="text-[#f85149] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Stop
+                          </button>
+                        )}
+                        {(card.runStatus === "failed" || card.runStatus === "stopped") && card.runId && (
+                          <button onClick={(e) => { e.stopPropagation(); retryAgent(card.runId!); }}
+                            className="text-[#d29922] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
+                            Retry
                           </button>
                         )}
                         {!card.runId && col.id === "open" && (

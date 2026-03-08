@@ -1098,6 +1098,48 @@ fn parse_git_diff_stat(output: &str) -> (u32, u32, Vec<String>) {
 }
 
 #[tauri::command]
+pub async fn retry_agent(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+) -> Result<String, String> {
+    let (repo, issue_number, issue_title, issue_body, stage) = {
+        let s = state.lock().await;
+        let run = s
+            .runs
+            .get(&run_id)
+            .ok_or("Run not found")?;
+        if run.status != AgentStatus::Failed && run.status != AgentStatus::Stopped {
+            return Err("Can only retry failed or stopped runs".to_string());
+        }
+        (
+            run.repo.clone(),
+            run.issue_number,
+            run.issue_title.clone(),
+            String::new(), // body is not stored in the run; will be fetched from issue
+            run.stage.clone(),
+        )
+    };
+
+    // Try to fetch the issue body from GitHub
+    let body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => issue.body.unwrap_or_default(),
+        Err(_) => issue_body,
+    };
+
+    launch_agent(
+        app,
+        state.inner().clone(),
+        repo,
+        issue_number,
+        issue_title,
+        body,
+        stage,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn stop_agent(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
