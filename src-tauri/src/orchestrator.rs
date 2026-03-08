@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Debug, Clone, Serialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "contracts.ts")]
 pub enum AgentStatus {
@@ -18,6 +18,36 @@ pub enum AgentStatus {
     Interrupted,
     #[serde(alias = "awaitingapproval")]
     AwaitingApproval,
+}
+
+impl<'de> Deserialize<'de> for AgentStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "preparing" => Ok(Self::Preparing),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "stopped" => Ok(Self::Stopped),
+            "interrupted" => Ok(Self::Interrupted),
+            "awaiting_approval" | "awaitingapproval" => Ok(Self::AwaitingApproval),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &[
+                    "preparing",
+                    "running",
+                    "completed",
+                    "failed",
+                    "stopped",
+                    "interrupted",
+                    "awaiting_approval",
+                ],
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -125,7 +155,6 @@ pub struct AgentRun {
     pub lines_added: u32,
     pub lines_removed: u32,
     pub files_modified_list: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::PipelineReport>,
     /// The CLI command invoked (e.g. "claude --print ...")
     pub command_display: Option<String>,
@@ -150,7 +179,6 @@ pub struct AgentRun {
     #[serde(default)]
     pub skipped_stages: Vec<String>,
     /// Structured context from the previous pipeline stage
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_context: Option<StageContext>,
     /// The next stage to advance to when approval is granted (only set when status is AwaitingApproval)
     #[serde(default)]
@@ -1643,5 +1671,16 @@ mod tests {
             serde_json::from_str("\"awaitingapproval\"").expect("deserialize legacy status");
 
         assert_eq!(status, AgentStatus::AwaitingApproval);
+    }
+
+    #[test]
+    fn test_agent_run_serializes_null_optional_contract_fields() {
+        let run = make_run("run-null-check", AgentStatus::Completed, PipelineStage::Done);
+        let value = serde_json::to_value(&run).unwrap();
+
+        assert!(value.get("report").is_some_and(serde_json::Value::is_null));
+        assert!(value
+            .get("stage_context")
+            .is_some_and(serde_json::Value::is_null));
     }
 }

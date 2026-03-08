@@ -97,9 +97,7 @@ pub fn load_state() -> Option<PersistedState> {
         }
     };
     let data = fs::read_to_string(&path).ok()?;
-    // Normalize the pre-snake_case AwaitingApproval value so older state files still load.
-    let normalized = data.replace("\"awaitingapproval\"", "\"awaiting_approval\"");
-    let mut persisted: PersistedState = serde_json::from_str(&normalized).ok()?;
+    let mut persisted: PersistedState = serde_json::from_str(&data).ok()?;
 
     // Mark any in-progress runs as Interrupted since the app restarted
     let mut modified = false;
@@ -407,5 +405,36 @@ mod tests {
         assert_eq!(loaded.total_output_tokens, 75000);
         assert!((loaded.total_cost_usd - 3.75).abs() < f64::EPSILON);
         assert!((loaded.total_runtime_secs - 600.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_persisted_state_loads_legacy_status_without_rewriting_other_strings() {
+        let mut runs = HashMap::new();
+        let mut run = make_run(
+            "run-awaiting",
+            AgentStatus::AwaitingApproval,
+            PipelineStage::CodeReview,
+        );
+        run.error = Some("awaitingapproval".to_string());
+        runs.insert("run-awaiting".to_string(), run);
+
+        let persisted = PersistedState {
+            repo: Some("test/repo".to_string()),
+            repos: vec!["test/repo".to_string()],
+            runs,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost_usd: 0.0,
+            total_runtime_secs: 0.0,
+        };
+
+        let mut json = serde_json::to_value(&persisted).unwrap();
+        json["runs"]["run-awaiting"]["status"] =
+            serde_json::Value::String("awaitingapproval".to_string());
+
+        let loaded: PersistedState = serde_json::from_value(json).unwrap();
+        let run = loaded.runs.get("run-awaiting").unwrap();
+        assert_eq!(run.status, AgentStatus::AwaitingApproval);
+        assert_eq!(run.error.as_deref(), Some("awaitingapproval"));
     }
 }
