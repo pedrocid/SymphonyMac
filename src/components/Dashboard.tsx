@@ -38,6 +38,10 @@ interface OrchestratorStatus {
   total_completed: number;
   total_failed: number;
   active_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
+  total_runtime_secs: number;
 }
 
 type KanbanCard = {
@@ -133,15 +137,21 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     } catch (e) { setError(String(e)); }
   }
 
-  function formatElapsed(startedAt: string, finishedAt: string | null): string {
-    const start = new Date(startedAt).getTime();
-    const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
-    const secs = Math.floor((end - start) / 1000);
+  function formatElapsed(startedAt: string, finishedAt: string | null, totalSecs?: number): string {
+    const secs = totalSecs !== undefined
+      ? Math.floor(totalSecs)
+      : Math.floor((( finishedAt ? new Date(finishedAt).getTime() : Date.now()) - new Date(startedAt).getTime()) / 1000);
     if (secs < 60) return `${secs}s`;
     const mins = Math.floor(secs / 60);
     if (mins < 60) return `${mins}m ${secs % 60}s`;
     const hours = Math.floor(mins / 60);
     return `${hours}h ${mins % 60}m`;
+  }
+
+  function formatTokens(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return n.toString();
   }
 
   function formatDate(dateStr: string): string {
@@ -302,6 +312,41 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       {error && (
         <div className="mx-6 mt-3 bg-[#f8514926] border border-[#f85149] rounded-lg p-3">
           <p className="text-[#f85149] text-sm">{error}</p>
+        </div>
+      )}
+
+      {/* Metrics Summary */}
+      {(status.total_cost_usd > 0 || status.total_input_tokens > 0) && (
+        <div className="mx-6 mt-3 flex items-center gap-6 bg-[#161b22] border border-[#30363d] rounded-lg px-4 py-2 text-xs shrink-0">
+          <div className="flex items-center gap-1.5 text-[#8b949e]">
+            <span className="text-[#e6edf3] font-medium">
+              {formatTokens(status.total_input_tokens + status.total_output_tokens)}
+            </span>
+            <span>tokens</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-[#8b949e]">
+            <span className="text-[#e6edf3] font-medium">
+              {formatTokens(status.total_input_tokens)}
+            </span>
+            <span>in</span>
+            <span className="text-[#484f58]">/</span>
+            <span className="text-[#e6edf3] font-medium">
+              {formatTokens(status.total_output_tokens)}
+            </span>
+            <span>out</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-[#8b949e]">
+            <span className="text-[#3fb950] font-medium">
+              ${status.total_cost_usd.toFixed(4)}
+            </span>
+            <span>cost</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-[#8b949e]">
+            <span className="text-[#e6edf3] font-medium">
+              {formatElapsed("", null, status.total_runtime_secs)}
+            </span>
+            <span>runtime</span>
+          </div>
         </div>
       )}
 
