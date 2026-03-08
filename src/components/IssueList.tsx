@@ -102,6 +102,7 @@ export function IssueList({
           issueNumber: issue.number,
           issueTitle: issue.title,
           issueBody: issue.body,
+          issueLabels: issue.labels,
         });
       }
       onRunStarted();
@@ -265,6 +266,7 @@ export function IssueList({
                         issueNumber: issue.number,
                         issueTitle: issue.title,
                         issueBody: issue.body,
+                        issueLabels: issue.labels,
                       }).then(() => onRunStarted());
                     }}
                     className="px-3 py-1 bg-[#21262d] border border-[#30363d] rounded-md text-sm text-[#8b949e] hover:text-[#e6edf3] hover:border-[#484f58] transition-colors shrink-0"

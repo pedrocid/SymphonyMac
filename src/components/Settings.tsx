@@ -47,6 +47,11 @@ export function Settings() {
     },
     priority_labels: ["priority:critical", "priority:high", "priority:medium", "priority:low"],
     stall_timeout_secs: 300,
+    stage_skip_labels: {
+      "skip:code-review": ["code_review"],
+      "skip:testing": ["testing"],
+      "docs-only": ["code_review", "testing"],
+    },
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +60,7 @@ export function Settings() {
   const [wsMessage, setWsMessage] = useState<string | null>(null);
   const [defaultPrompts, setDefaultPrompts] = useState<Record<string, string>>({});
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  const [newSkipLabel, setNewSkipLabel] = useState("");
 
   useEffect(() => {
     loadConfig();
@@ -410,6 +416,105 @@ export function Settings() {
                 Issues without any priority label are dispatched last. Within the same priority,
                 older issues are dispatched first.
               </p>
+            </div>
+          </div>
+
+          {/* Stage Skip Labels */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-1">Stage Skip Labels</h3>
+            <p className="text-xs text-[#8b949e] mb-4">
+              Map issue labels to pipeline stages that should be skipped. Only Code Review and Testing
+              can be skipped; Implement and Merge are always required.
+            </p>
+
+            <div className="space-y-3">
+              {Object.entries(config.stage_skip_labels || {}).map(([label, stages]) => (
+                <div
+                  key={label}
+                  className="flex items-center gap-3 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-[#e6edf3] font-mono">{label}</p>
+                    <div className="flex gap-2 mt-1">
+                      {(["code_review", "testing"] as const).map((stage) => {
+                        const isActive = stages.includes(stage);
+                        return (
+                          <button
+                            key={stage}
+                            onClick={() => {
+                              const updated = { ...config.stage_skip_labels };
+                              const current = [...(updated[label] || [])];
+                              if (isActive) {
+                                updated[label] = current.filter((s) => s !== stage);
+                                if (updated[label].length === 0) delete updated[label];
+                              } else {
+                                updated[label] = [...current, stage];
+                              }
+                              setConfig({ ...config, stage_skip_labels: updated });
+                            }}
+                            className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${
+                              isActive
+                                ? "bg-[#d2992215] border-[#d29922] text-[#d29922]"
+                                : "bg-[#0d1117] border-[#30363d] text-[#484f58] hover:border-[#484f58]"
+                            }`}
+                          >
+                            {stage.replace("_", " ")}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const updated = { ...config.stage_skip_labels };
+                      delete updated[label];
+                      setConfig({ ...config, stage_skip_labels: updated });
+                    }}
+                    className="text-xs text-[#f85149] hover:bg-[#f8514915] rounded px-2 py-1 transition-colors shrink-0"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+
+              {Object.keys(config.stage_skip_labels || {}).length === 0 && (
+                <div className="text-sm text-[#484f58] py-2 text-center">No skip label mappings</div>
+              )}
+
+              <div className="flex gap-2 mt-2">
+                <input
+                  type="text"
+                  placeholder="New label (e.g., skip:testing)"
+                  value={newSkipLabel}
+                  onChange={(e) => setNewSkipLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newSkipLabel.trim()) {
+                      const updated = { ...config.stage_skip_labels };
+                      if (!updated[newSkipLabel.trim()]) {
+                        updated[newSkipLabel.trim()] = [];
+                      }
+                      setConfig({ ...config, stage_skip_labels: updated });
+                      setNewSkipLabel("");
+                    }
+                  }}
+                  className="flex-1 px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58] font-mono"
+                />
+                <button
+                  onClick={() => {
+                    if (newSkipLabel.trim()) {
+                      const updated = { ...config.stage_skip_labels };
+                      if (!updated[newSkipLabel.trim()]) {
+                        updated[newSkipLabel.trim()] = [];
+                      }
+                      setConfig({ ...config, stage_skip_labels: updated });
+                      setNewSkipLabel("");
+                    }
+                  }}
+                  className="px-3 py-2 bg-[#21262d] text-[#8b949e] border border-[#30363d] rounded-md text-sm hover:bg-[#30363d] transition-colors"
+                >
+                  Add
+                </button>
+              </div>
             </div>
           </div>
 
