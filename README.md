@@ -72,6 +72,23 @@ npm install
 npx tauri dev
 ```
 
+## Testing
+
+Frontend tests use Vitest and React Testing Library. Backend tests run through Rust's built-in test runner for the Tauri crate.
+
+```bash
+npm test
+npm run test:backend
+```
+
+If you want the interactive frontend test watcher while developing:
+
+```bash
+npm run test:watch
+```
+
+Pull requests run GitHub Actions for frontend build/tests, backend formatting/tests, and a macOS Tauri build smoke check.
+
 ## Usage
 
 1. Open Symphony Mac

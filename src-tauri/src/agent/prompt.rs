@@ -274,4 +274,62 @@ mod tests {
             assert!(!prompt.contains("headRefName to find"));
         }
     }
+
+    #[test]
+    fn test_build_prompt_appends_previous_context_and_retry_error() {
+        use crate::orchestrator::StageContext;
+
+        let previous_context = StageContext {
+            from_stage: "implement".to_string(),
+            files_changed: vec!["src/App.tsx".to_string()],
+            lines_added: 12,
+            lines_removed: 3,
+            pr_number: Some(91),
+            branch_name: Some("symphony/issue-62".to_string()),
+            summary: "Implemented automated coverage.".to_string(),
+        };
+
+        let prompt = build_prompt(
+            &PipelineStage::Testing,
+            62,
+            "pedrocid/SymphonyMac",
+            "Add automated coverage",
+            "Cover the Tauri, React, and pipeline flows.",
+            &HashMap::new(),
+            2,
+            "cargo test failed",
+            Some(&previous_context),
+        );
+
+        assert!(prompt.contains("GitHub issue #62"));
+        assert!(prompt.contains("## Context from implement stage"));
+        assert!(prompt.contains("PR number: #91"));
+        assert!(prompt.contains("Previous attempt (2) failed with: cargo test failed"));
+    }
+
+    #[test]
+    fn test_build_prompt_uses_custom_stage_template() {
+        let mut stage_prompts = HashMap::new();
+        stage_prompts.insert(
+            "testing".to_string(),
+            "Custom test plan for {{repo}} issue #{{issue_number}}".to_string(),
+        );
+
+        let prompt = build_prompt(
+            &PipelineStage::Testing,
+            62,
+            "pedrocid/SymphonyMac",
+            "Add automated coverage",
+            "Cover the Tauri, React, and pipeline flows.",
+            &stage_prompts,
+            1,
+            "",
+            None,
+        );
+
+        assert_eq!(
+            prompt,
+            "Custom test plan for pedrocid/SymphonyMac issue #62"
+        );
+    }
 }

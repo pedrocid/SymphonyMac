@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Preparing,
     Running,
@@ -14,6 +14,7 @@ pub enum AgentStatus {
     Failed,
     Stopped,
     Interrupted,
+    #[serde(alias = "awaitingapproval")]
     AwaitingApproval,
 }
 
@@ -1286,6 +1287,42 @@ mod tests {
         assert!(run_json.get("stage_context").is_none());
     }
 
+    fn make_timed_run(id: &str, started_at: &str) -> AgentRun {
+        AgentRun {
+            id: id.to_string(),
+            repo: "pedrocid/SymphonyMac".to_string(),
+            issue_number: 62,
+            issue_title: "Add automated coverage".to_string(),
+            status: AgentStatus::AwaitingApproval,
+            stage: PipelineStage::CodeReview,
+            started_at: started_at.to_string(),
+            finished_at: None,
+            logs: vec![],
+            workspace_path: "/tmp/symphony".to_string(),
+            error: None,
+            attempt: 2,
+            max_retries: 3,
+            lines_added: 10,
+            lines_removed: 4,
+            files_modified_list: vec!["src/App.tsx".to_string()],
+            report: None,
+            command_display: Some("claude --print".to_string()),
+            agent_type: "claude".to_string(),
+            last_log_line: Some("Awaiting approval".to_string()),
+            log_count: 12,
+            activity: Some("Analyzing code".to_string()),
+            last_log_timestamp: Some(started_at.to_string()),
+            input_tokens: 50,
+            output_tokens: 75,
+            cost_usd: 0.0123,
+            issue_labels: vec!["feature".to_string()],
+            skipped_stages: vec!["testing".to_string()],
+            stage_context: None,
+            pending_next_stage: Some("testing".to_string()),
+        }
+    }
+
+
     #[test]
     fn test_priority_rank_critical_is_first() {
         let labels = default_priority_labels();
@@ -1510,5 +1547,78 @@ mod tests {
         assert_eq!(state.config.agent_type, "codex");
         assert!(!state.config.auto_approve);
         assert_eq!(state.config.max_concurrent, 7);
+    }
+
+    #[test]
+    fn test_stage_context_prompt_section_includes_metadata_and_truncates_file_list() {
+        let context = StageContext {
+            from_stage: "implement".to_string(),
+            files_changed: (1..=22)
+                .map(|index| format!("src/file-{}.ts", index))
+                .collect(),
+            lines_added: 120,
+            lines_removed: 18,
+            pr_number: Some(91),
+            branch_name: Some("symphony/issue-62".to_string()),
+            summary: "Implemented coverage and CI".to_string(),
+        };
+
+        let prompt_section = context.to_prompt_section();
+
+        assert!(prompt_section.contains("## Context from implement stage"));
+        assert!(prompt_section.contains("Files changed (120 added, 18 removed)"));
+        assert!(prompt_section.contains("PR number: #91"));
+        assert!(prompt_section.contains("Branch: symphony/issue-62"));
+        assert!(prompt_section.contains("... and 2 more files"));
+        assert!(prompt_section.contains("Summary: Implemented coverage and CI"));
+    }
+
+    #[test]
+    fn test_latest_run_for_issue_uses_most_recent_started_at() {
+        let mut state = OrchestratorState {
+            is_running: false,
+            repos: vec!["pedrocid/SymphonyMac".to_string()],
+            runs: HashMap::new(),
+            config: RunConfig::default(),
+            agent_pids: HashMap::new(),
+            stop_flag: false,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost_usd: 0.0,
+            total_runtime_secs: 0.0,
+        };
+        state.runs.insert(
+            "run-early".to_string(),
+            make_timed_run("run-early", "2026-03-08T10:00:00Z"),
+        );
+        state.runs.insert(
+            "run-late".to_string(),
+            make_timed_run("run-late", "2026-03-08T11:00:00Z"),
+        );
+
+        let latest = state
+            .latest_run_for_issue("pedrocid/SymphonyMac", 62)
+            .expect("latest run");
+
+        assert_eq!(latest.id, "run-late");
+    }
+
+    #[test]
+    fn test_agent_run_serialization_matches_frontend_contract() {
+        let json = serde_json::to_value(make_timed_run("run-contract", "2026-03-08T11:00:00Z"))
+            .expect("serialize agent run");
+
+        assert_eq!(json["status"], "awaiting_approval");
+        assert_eq!(json["stage"], "code_review");
+        assert_eq!(json["pending_next_stage"], "testing");
+        assert_eq!(json["skipped_stages"], serde_json::json!(["testing"]));
+    }
+
+    #[test]
+    fn test_agent_status_deserializes_legacy_awaitingapproval_value() {
+        let status: AgentStatus =
+            serde_json::from_str("\"awaitingapproval\"").expect("deserialize legacy status");
+
+        assert_eq!(status, AgentStatus::AwaitingApproval);
     }
 }

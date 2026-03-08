@@ -951,4 +951,56 @@ mod tests {
         assert_eq!(done_run.cost_usd, 4.25);
         assert_eq!(done_run.skipped_stages, vec!["code_review".to_string()]);
     }
+
+    #[test]
+    fn test_extract_stage_context_detects_pr_branch_and_summary() {
+        use super::extract_stage_context;
+
+        let run = AgentRun {
+            id: "run-1".to_string(),
+            repo: "pedrocid/SymphonyMac".to_string(),
+            issue_number: 62,
+            issue_title: "Add automated coverage".to_string(),
+            status: AgentStatus::Completed,
+            stage: PipelineStage::Implement,
+            started_at: "2026-03-08T10:00:00Z".to_string(),
+            finished_at: Some("2026-03-08T10:30:00Z".to_string()),
+            logs: vec![
+                "$ git checkout -b symphony/issue-62".to_string(),
+                "Created pull request https://github.com/pedrocid/SymphonyMac/pull/91".to_string(),
+                "git commit -m \"Add automated test coverage\"".to_string(),
+            ],
+            workspace_path: "/tmp/symphony".to_string(),
+            error: None,
+            attempt: 1,
+            max_retries: 2,
+            lines_added: 24,
+            lines_removed: 6,
+            files_modified_list: vec![
+                "src/App.tsx".to_string(),
+                "src-tauri/src/agent.rs".to_string(),
+            ],
+            report: None,
+            command_display: Some("claude --print".to_string()),
+            agent_type: "claude".to_string(),
+            last_log_line: None,
+            log_count: 0,
+            activity: None,
+            last_log_timestamp: None,
+            input_tokens: 100,
+            output_tokens: 150,
+            cost_usd: 0.025,
+            issue_labels: vec!["feature".to_string()],
+            skipped_stages: vec![],
+            stage_context: None,
+            pending_next_stage: None,
+        };
+
+        let context = extract_stage_context(&run, "pedrocid/SymphonyMac");
+
+        assert_eq!(context.from_stage, "implement");
+        assert_eq!(context.pr_number, Some(91));
+        assert_eq!(context.branch_name.as_deref(), Some("symphony/issue-62"));
+        assert!(context.summary.contains("git commit"));
+    }
 }

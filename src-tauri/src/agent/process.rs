@@ -890,3 +890,54 @@ impl AttemptSpec for StageLaunchSpec {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_stream_json_event_formats_tool_use_and_result_events() {
+        let assistant_lines = parse_stream_json_event(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test -- --runInBand"}},{"type":"text","text":"Reviewing the smoke flow now."}]}}"#,
+        );
+        let result_lines = parse_stream_json_event(
+            r#"{"type":"result","subtype":"success","duration_ms":4500,"num_turns":3,"total_cost_usd":0.0142}"#,
+        );
+
+        assert!(assistant_lines
+            .iter()
+            .any(|line| line.contains("→ $ npm test -- --runInBand")));
+        assert!(assistant_lines
+            .iter()
+            .any(|line| line.contains("💬 Reviewing the smoke flow now.")));
+        assert_eq!(
+            result_lines,
+            vec!["✅ Agent completed in 4.5s (3 turns, $0.0142)"]
+        );
+    }
+
+    #[test]
+    fn test_parse_token_usage_extracts_result_usage() {
+        let usage = parse_token_usage(
+            r#"{"type":"result","duration_ms":3200,"total_cost_usd":0.0125,"usage":{"input_tokens":123,"output_tokens":456}}"#,
+        )
+        .expect("token usage");
+
+        assert_eq!(usage.input_tokens, 123);
+        assert_eq!(usage.output_tokens, 456);
+        assert!((usage.cost_usd - 0.0125).abs() < f64::EPSILON);
+        assert!((usage.duration_secs - 3.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_detect_activity_covers_git_and_test_commands() {
+        assert_eq!(
+            detect_activity("gh pr create"),
+            Some("Git operations".to_string())
+        );
+        assert_eq!(
+            detect_activity("cargo test"),
+            Some("Running tests".to_string())
+        );
+    }
+}
