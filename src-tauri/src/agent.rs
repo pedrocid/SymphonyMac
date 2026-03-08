@@ -194,6 +194,130 @@ fn detect_activity(line: &str) -> Option<String> {
     }
 }
 
+/// Parse a stream-json event line from Claude CLI into human-readable log lines.
+/// Returns one or more display strings. Falls back to the raw line if not valid JSON.
+fn parse_stream_json_event(raw: &str) -> Vec<String> {
+    let parsed: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return vec![raw.to_string()],
+    };
+
+    let event_type = parsed["type"].as_str().unwrap_or("");
+
+    match event_type {
+        "system" => {
+            let model = parsed["model"].as_str().unwrap_or("unknown");
+            vec![format!("🔧 Session initialized (model: {})", model)]
+        }
+        "assistant" => {
+            let content = match parsed["message"]["content"].as_array() {
+                Some(arr) => arr,
+                None => return vec![],
+            };
+            let mut lines = Vec::new();
+            for item in content {
+                match item["type"].as_str().unwrap_or("") {
+                    "tool_use" => {
+                        let tool = item["name"].as_str().unwrap_or("unknown");
+                        let input = &item["input"];
+                        let detail = match tool {
+                            "Read" => {
+                                let path = input["file_path"].as_str().unwrap_or("");
+                                let short = path.rsplit('/').next().unwrap_or(path);
+                                format!("Reading file: {}", short)
+                            }
+                            "Edit" => {
+                                let path = input["file_path"].as_str().unwrap_or("");
+                                let short = path.rsplit('/').next().unwrap_or(path);
+                                format!("Editing file: {}", short)
+                            }
+                            "Write" => {
+                                let path = input["file_path"].as_str().unwrap_or("");
+                                let short = path.rsplit('/').next().unwrap_or(path);
+                                format!("Writing file: {}", short)
+                            }
+                            "Bash" => {
+                                let cmd = input["command"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(120)
+                                    .collect::<String>();
+                                format!("$ {}", cmd)
+                            }
+                            "Grep" => {
+                                let pattern = input["pattern"].as_str().unwrap_or("");
+                                format!("Searching for: {}", pattern)
+                            }
+                            "Glob" => {
+                                let pattern = input["pattern"].as_str().unwrap_or("");
+                                format!("Finding files: {}", pattern)
+                            }
+                            _ => format!("{}: {}", tool, truncate_json(input, 100)),
+                        };
+                        lines.push(format!("→ {}", detail));
+                    }
+                    "text" => {
+                        let text = item["text"].as_str().unwrap_or("");
+                        if !text.trim().is_empty() {
+                            // Only show the first ~200 chars of assistant text
+                            let preview: String = text.chars().take(200).collect();
+                            lines.push(format!("💬 {}", preview));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            lines
+        }
+        "user" => {
+            // Tool results - show a condensed version
+            let content = match parsed["message"]["content"].as_array() {
+                Some(arr) => arr,
+                None => return vec![],
+            };
+            let mut lines = Vec::new();
+            for item in content {
+                if item["type"].as_str() == Some("tool_result") {
+                    let result_text = item["content"].as_str().unwrap_or("");
+                    let line_count = result_text.lines().count();
+                    if line_count > 0 {
+                        lines.push(format!("  ✓ Result ({} lines)", line_count));
+                    }
+                }
+            }
+            lines
+        }
+        "result" => {
+            let duration_ms = parsed["duration_ms"].as_u64().unwrap_or(0);
+            let turns = parsed["num_turns"].as_u64().unwrap_or(0);
+            let cost = parsed["total_cost_usd"].as_f64().unwrap_or(0.0);
+            let success = parsed["subtype"].as_str() == Some("success");
+            let status = if success { "completed" } else { "failed" };
+            vec![format!(
+                "✅ Agent {} in {:.1}s ({} turns, ${:.4})",
+                status,
+                duration_ms as f64 / 1000.0,
+                turns,
+                cost
+            )]
+        }
+        "rate_limit_event" => vec![], // silently skip
+        _ => vec![],
+    }
+}
+
+/// Truncate a JSON value to a max character length for display.
+fn truncate_json(value: &serde_json::Value, max_len: usize) -> String {
+    let s = value.to_string();
+    if s.len() > max_len {
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{}...", truncated)
+    } else {
+        s
+    }
+}
+
 fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>) {
     match config.agent_type.as_str() {
         "codex" => {
@@ -219,7 +343,12 @@ fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>)
             (crate::paths::resolve("codex"), args)
         }
         _ => {
-            let mut args = vec!["--print".to_string()];
+            let mut args = vec![
+                "--print".to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--verbose".to_string(),
+            ];
             if config.auto_approve {
                 args.push("--dangerously-skip-permissions".to_string());
             }
@@ -465,23 +594,27 @@ async fn run_agent_process(
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let ts = Utc::now().to_rfc3339();
-                let log_line = AgentLogLine {
-                    run_id: run_id_out.clone(),
-                    timestamp: ts.clone(),
-                    line: line.clone(),
-                };
-                let _ = app_out.emit("agent-log", &log_line);
-                // Persist to disk
-                logs::append_log_line(&run_id_out, &line);
-                let activity = detect_activity(&line);
-                let mut s = state_out.lock().await;
-                if let Some(run) = s.runs.get_mut(&run_id_out) {
-                    run.logs.push(line.clone());
-                    run.last_log_line = Some(line.clone());
-                    run.log_count += 1;
-                    if let Some(ref act) = activity {
-                        run.activity = Some(act.clone());
+                // Try to parse as stream-json event from Claude CLI
+                let display_lines = parse_stream_json_event(&line);
+
+                for display_line in &display_lines {
+                    let ts = Utc::now().to_rfc3339();
+                    let log_line = AgentLogLine {
+                        run_id: run_id_out.clone(),
+                        timestamp: ts.clone(),
+                        line: display_line.clone(),
+                    };
+                    let _ = app_out.emit("agent-log", &log_line);
+                    logs::append_log_line(&run_id_out, display_line);
+                    let activity = detect_activity(display_line);
+                    let mut s = state_out.lock().await;
+                    if let Some(run) = s.runs.get_mut(&run_id_out) {
+                        run.logs.push(display_line.clone());
+                        run.last_log_line = Some(display_line.clone());
+                        run.log_count += 1;
+                        if let Some(ref act) = activity {
+                            run.activity = Some(act.clone());
+                        }
                     }
                 }
             }
