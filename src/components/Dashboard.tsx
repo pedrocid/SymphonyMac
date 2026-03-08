@@ -505,7 +505,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                             Restart
                           </button>
                         )}
-                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && card.runStage === "implement" && (
+                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && (!card.runStage || card.runStage === "implement") && (
                           <button onClick={(e) => { e.stopPropagation(); retryAgent(card.runId!); }}
                             className="text-[#d29922] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Retry
