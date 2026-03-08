@@ -23,7 +23,11 @@ cp -R "src-tauri/target/release/bundle/macos/Symphony Mac.app" "/Applications/Sy
 
 - `src-tauri/src/lib.rs` - Entry point, registers Tauri commands
 - `src-tauri/src/orchestrator.rs` - Poll loop, state management, PipelineStage enum
-- `src-tauri/src/agent.rs` - Agent subprocess execution, prompt building, auto-chaining
+- `src-tauri/src/agent.rs` - Tauri-facing agent commands and launch/approval entrypoints
+- `src-tauri/src/agent/prompt.rs` - Prompt templates and CLI command construction
+- `src-tauri/src/agent/process.rs` - Agent subprocess execution, stream parsing, stall handling
+- `src-tauri/src/agent/pipeline.rs` - Stage preparation, retries, transitions, finalization
+- `src-tauri/src/agent/runtime.rs` - Shared state mutation, persist, emit helpers
 - `src-tauri/src/github.rs` - GitHub operations via `gh` CLI
 - `src-tauri/src/workspace.rs` - Workspace cloning/cleanup in ~/symphony-workspaces/
 - `src/components/Dashboard.tsx` - Kanban board UI

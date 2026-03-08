@@ -129,6 +129,8 @@ All GitHub operations use the `gh` CLI -- no API tokens needed beyond what `gh a
 
 ## Architecture
 
+See [docs/agent-pipeline-architecture.md](docs/agent-pipeline-architecture.md) for the backend pipeline module split introduced in issue #57.
+
 ```
 Tauri v2 App
   Frontend (React + TypeScript + Tailwind CSS)
@@ -140,7 +142,11 @@ Tauri v2 App
 
   Backend (Rust)
     orchestrator.rs .... Poll loop, state management, dispatch
-    agent.rs ........... Prompt builder, subprocess exec, auto-chaining
+    agent.rs ........... Tauri commands and launch/approval entrypoints
+    agent/prompt.rs .... Prompt templates and CLI command construction
+    agent/process.rs ... Agent subprocess execution and stream parsing
+    agent/pipeline.rs .. Stage transitions, retries, scheduling, finalization
+    agent/runtime.rs ... Shared run mutation, persist, emit helpers
     github.rs .......... gh CLI wrapper (repos, issues, PRs)
     workspace.rs ....... Clone/cleanup isolated workspaces
     report.rs .......... Pipeline report generation
