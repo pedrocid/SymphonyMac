@@ -214,6 +214,69 @@ pub async fn list_open_prs(repo: String) -> Result<Vec<PullRequest>, String> {
     Ok(prs)
 }
 
+/// Parse blocker references from issue body text.
+/// Looks for patterns like "blocked by #X", "depends on #X", "requires #X".
+pub fn parse_blockers(text: &str) -> Vec<u64> {
+    let text_lower = text.to_lowercase();
+    let mut blockers = Vec::new();
+    let patterns = [
+        "blocked by #",
+        "depends on #",
+        "requires #",
+        "waiting on #",
+        "waiting for #",
+        "after #",
+    ];
+
+    for pattern in &patterns {
+        let mut search_from = 0;
+        while let Some(pos) = text_lower[search_from..].find(pattern) {
+            let abs_pos = search_from + pos + pattern.len();
+            let after = &text[abs_pos..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                if n > 0 && !blockers.contains(&n) {
+                    blockers.push(n);
+                }
+            }
+            search_from = abs_pos;
+        }
+    }
+
+    blockers
+}
+
+/// Check which of the given blocker issue numbers are still open in the repo.
+/// Returns the list of issue numbers that are still open.
+pub fn check_blockers_open(repo: &str, blocker_numbers: &[u64]) -> Vec<u64> {
+    let mut open_blockers = Vec::new();
+    for &num in blocker_numbers {
+        let num_str = num.to_string();
+        match run_gh(&[
+            "issue",
+            "view",
+            &num_str,
+            "-R",
+            repo,
+            "--json",
+            "state",
+        ]) {
+            Ok(output) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&output) {
+                    if v["state"].as_str() == Some("OPEN") {
+                        open_blockers.push(num);
+                    }
+                }
+            }
+            Err(_) => {
+                // If we can't check, assume it's still blocking to be safe
+                open_blockers.push(num);
+            }
+        }
+    }
+    open_blockers
+}
+
 /// Parse "Closes #123" or "Fixes #123" from PR body
 fn parse_closes_issue(body: &str) -> Option<u64> {
     let body_lower = body.to_lowercase();
