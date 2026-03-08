@@ -84,6 +84,8 @@ pub struct RunConfig {
     pub cleanup_on_failure: bool,
     pub cleanup_on_stop: bool,
     pub workspace_ttl_days: u32,
+    #[serde(default)]
+    pub max_concurrent_by_stage: HashMap<String, usize>,
 }
 
 impl Default for RunConfig {
@@ -102,6 +104,7 @@ impl Default for RunConfig {
             cleanup_on_failure: false,
             cleanup_on_stop: false,
             workspace_ttl_days: 7,
+            max_concurrent_by_stage: HashMap::new(),
         }
     }
 }
@@ -308,13 +311,14 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
     let mut all_processed_notified = false;
 
     loop {
-        let (should_stop, poll_interval, max_concurrent, label) = {
+        let (should_stop, poll_interval, max_concurrent, label, stage_limits) = {
             let s = state.lock().await;
             (
                 s.stop_flag,
                 s.config.poll_interval_secs,
                 s.config.max_concurrent,
                 s.config.issue_label.clone(),
+                s.config.max_concurrent_by_stage.clone(),
             )
         };
 
@@ -367,12 +371,19 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         }
 
         // ---- STEP 2: Determine available slots ----
-        let active_count = {
+        let (active_count, active_by_stage) = {
             let s = state.lock().await;
-            s.runs
+            let active: Vec<&AgentRun> = s
+                .runs
                 .values()
                 .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-                .count()
+                .collect();
+            let count = active.len();
+            let mut by_stage: HashMap<String, usize> = HashMap::new();
+            for r in &active {
+                *by_stage.entry(r.stage.to_string()).or_insert(0) += 1;
+            }
+            (count, by_stage)
         };
         let available_slots = max_concurrent.saturating_sub(active_count);
         if available_slots == 0 {
@@ -422,6 +433,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         // ---- STEP 4: Dispatch issues ----
         let mut used_slots = 0usize;
         let mut blocked_issues: Vec<(u64, Vec<u64>)> = Vec::new();
+        let mut stage_slots_used: HashMap<String, usize> = HashMap::new();
 
         for issue in &issues {
             if used_slots >= available_slots {
@@ -471,6 +483,18 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 )
             };
 
+            // Check per-stage concurrency limit
+            let stage_name = stage.to_string();
+            if let Some(&limit) = stage_limits.get(&stage_name) {
+                if limit > 0 {
+                    let current = active_by_stage.get(&stage_name).copied().unwrap_or(0)
+                        + stage_slots_used.get(&stage_name).copied().unwrap_or(0);
+                    if current >= limit {
+                        continue; // Skip: per-stage limit reached
+                    }
+                }
+            }
+
             if let Err(e) = crate::agent::launch_agent(
                 app.clone(),
                 state.clone(),
@@ -487,6 +511,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 }));
             } else {
                 used_slots += 1;
+                *stage_slots_used.entry(stage_name).or_insert(0) += 1;
             }
         }
 
@@ -509,4 +534,39 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
 
     let mut s = state.lock().await;
     s.is_running = false;
+}
+
+/// Check whether an additional agent for the given stage can be launched
+/// without exceeding the per-stage (or global) concurrency limit.
+pub fn can_launch_stage(state: &OrchestratorState, stage: &PipelineStage) -> bool {
+    let active_count = state
+        .runs
+        .values()
+        .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
+        .count();
+
+    // Global limit
+    if active_count >= state.config.max_concurrent {
+        return false;
+    }
+
+    // Per-stage limit (0 means use global only)
+    let stage_name = stage.to_string();
+    if let Some(&limit) = state.config.max_concurrent_by_stage.get(&stage_name) {
+        if limit > 0 {
+            let stage_count = state
+                .runs
+                .values()
+                .filter(|r| {
+                    (r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
+                        && r.stage.to_string() == stage_name
+                })
+                .count();
+            if stage_count >= limit {
+                return false;
+            }
+        }
+    }
+
+    true
 }
