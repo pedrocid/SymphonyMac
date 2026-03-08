@@ -160,15 +160,20 @@ impl Default for RunConfig {
 /// Returns the priority rank of an issue based on its labels and the configured priority ordering.
 /// Lower rank = higher priority. Issues without any priority label get `usize::MAX`.
 fn issue_priority_rank(issue: &crate::github::Issue, priority_labels: &[String]) -> usize {
+    let mut best = usize::MAX;
     for label in &issue.labels {
         let label_lower = label.to_lowercase();
         for (rank, priority) in priority_labels.iter().enumerate() {
+            if rank >= best {
+                break;
+            }
             if label_lower == priority.to_lowercase() {
-                return rank;
+                best = rank;
+                break;
             }
         }
     }
-    usize::MAX
+    best
 }
 
 /// Sort issues for dispatch: priority labels ascending, created_at oldest first, issue number as tiebreaker.
@@ -693,6 +698,14 @@ mod tests {
     fn test_priority_rank_case_insensitive() {
         let labels = default_priority_labels();
         let issue = make_issue(1, vec!["Priority:Critical"], "2024-01-01T00:00:00Z");
+        assert_eq!(issue_priority_rank(&issue, &labels), 0);
+    }
+
+    #[test]
+    fn test_priority_rank_multiple_labels_uses_highest() {
+        let labels = default_priority_labels();
+        // Issue has both low and critical labels — should use critical (rank 0), not low (rank 3)
+        let issue = make_issue(1, vec!["priority:low", "priority:critical"], "2024-01-01T00:00:00Z");
         assert_eq!(issue_priority_rank(&issue, &labels), 0);
     }
 
