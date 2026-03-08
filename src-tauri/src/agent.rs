@@ -961,10 +961,14 @@ fn spawn_next_stage(
 
         // Wait until the per-stage (and global) concurrency limit allows launching
         loop {
-            let can_launch = {
+            let (can_launch, stopped) = {
                 let s = state.lock().await;
-                crate::orchestrator::can_launch_stage(&s, &stage)
+                (crate::orchestrator::can_launch_stage(&s, &stage), s.stop_flag)
             };
+            if stopped {
+                eprintln!("Orchestrator stopped; aborting queued stage {stage_label} for issue #{issue_number}");
+                return;
+            }
             if can_launch {
                 break;
             }
@@ -1080,6 +1084,22 @@ fn spawn_retry(
 
     tokio::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
+
+        // Wait until the per-stage (and global) concurrency limit allows launching
+        loop {
+            let (can_launch, stopped) = {
+                let s = state.lock().await;
+                (crate::orchestrator::can_launch_stage(&s, &stage), s.stop_flag)
+            };
+            if stopped {
+                eprintln!("Orchestrator stopped; aborting retry of {stage_label} for issue #{issue_number}");
+                return;
+            }
+            if can_launch {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
 
         let run_id = Uuid::new_v4().to_string();
         let config = {
