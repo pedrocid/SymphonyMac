@@ -69,6 +69,10 @@ export function Settings() {
     loadDefaultPrompts();
   }, []);
 
+  useEffect(() => {
+    setSaved(false);
+  }, [config]);
+
   async function loadDefaultPrompts() {
     try {
       const defaults = await invoke<Record<string, string>>("get_default_prompts");
@@ -879,7 +883,7 @@ export function Settings() {
             >
               Save Settings
             </button>
-            {saved && <span className="text-sm text-[#3fb950]">Saved!</span>}
+            {saved && <span className="text-sm text-[#3fb950]">Settings saved</span>}
             {error && <span className="text-sm text-[#f85149]">{error}</span>}
           </div>
 

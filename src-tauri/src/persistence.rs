@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage};
+use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig};
 
 /// Returns the persistence directory: ~/Library/Application Support/SymphonyMac/
 fn persistence_dir() -> PathBuf {
@@ -14,32 +14,65 @@ fn persistence_dir() -> PathBuf {
 }
 
 /// Returns the path to the persisted state file.
-fn state_file_path() -> PathBuf {
+fn state_file_path() -> Result<PathBuf, String> {
     let dir = persistence_dir();
-    let _ = fs::create_dir_all(&dir);
-    dir.join("orchestrator_state.json")
+    fs::create_dir_all(&dir).map_err(|e| {
+        format!(
+            "failed to create persistence directory {}: {}",
+            dir.display(),
+            e
+        )
+    })?;
+    Ok(dir.join("orchestrator_state.json"))
 }
 
 /// Subset of OrchestratorState that we persist to disk.
 /// Excludes runtime-only fields like agent_pids and stop_flag.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PersistedState {
     /// Legacy field for backward compatibility with old persisted state files.
-    #[serde(default)]
     pub repo: Option<String>,
     /// List of monitored repositories.
-    #[serde(default)]
     pub repos: Vec<String>,
     pub runs: HashMap<String, AgentRun>,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_cost_usd: f64,
     pub total_runtime_secs: f64,
+    pub config: RunConfig,
+}
+
+fn write_file_atomically(path: &Path, contents: &str) -> Result<(), String> {
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, contents).map_err(|e| {
+        format!(
+            "failed to write temp state file {}: {}",
+            tmp_path.display(),
+            e
+        )
+    })?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "failed to rename temp state file {} to {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+fn write_persisted_state(persisted: &PersistedState) -> Result<(), String> {
+    let path = state_file_path()?;
+    let json = serde_json::to_string_pretty(persisted)
+        .map_err(|e| format!("failed to serialize state: {}", e))?;
+    write_file_atomically(&path, &json)
 }
 
 /// Save the current orchestrator state to disk.
 /// Called on every status transition (stage change, completion, failure).
-pub fn save_state(state: &crate::orchestrator::OrchestratorState) {
+pub fn save_state(state: &crate::orchestrator::OrchestratorState) -> Result<(), String> {
     let persisted = PersistedState {
         repo: None,
         repos: state.repos.clone(),
@@ -48,27 +81,21 @@ pub fn save_state(state: &crate::orchestrator::OrchestratorState) {
         total_output_tokens: state.total_output_tokens,
         total_cost_usd: state.total_cost_usd,
         total_runtime_secs: state.total_runtime_secs,
+        config: state.config.clone(),
     };
-
-    let path = state_file_path();
-    match serde_json::to_string_pretty(&persisted) {
-        Ok(json) => {
-            // Write to temp file first, then rename for atomicity
-            let tmp_path = path.with_extension("json.tmp");
-            if fs::write(&tmp_path, &json).is_ok() {
-                let _ = fs::rename(&tmp_path, &path);
-            }
-        }
-        Err(e) => {
-            eprintln!("[persistence] Failed to serialize state: {}", e);
-        }
-    }
+    write_persisted_state(&persisted)
 }
 
 /// Load persisted state from disk.
 /// Any runs that were Running or Preparing are marked as Interrupted.
 pub fn load_state() -> Option<PersistedState> {
-    let path = state_file_path();
+    let path = match state_file_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("[persistence] Failed to resolve state path: {}", err);
+            return None;
+        }
+    };
     let data = fs::read_to_string(&path).ok()?;
     let mut persisted: PersistedState = serde_json::from_str(&data).ok()?;
 
@@ -87,12 +114,11 @@ pub fn load_state() -> Option<PersistedState> {
 
     // Persist the updated state so Interrupted status is saved to disk
     if modified {
-        let path = state_file_path();
-        if let Ok(json) = serde_json::to_string_pretty(&persisted) {
-            let tmp_path = path.with_extension("json.tmp");
-            if fs::write(&tmp_path, &json).is_ok() {
-                let _ = fs::rename(&tmp_path, &path);
-            }
+        if let Err(err) = write_persisted_state(&persisted) {
+            eprintln!(
+                "[persistence] Failed to save interrupted run status update: {}",
+                err
+            );
         }
     }
 
@@ -142,7 +168,7 @@ pub struct InterruptedRunInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::{AgentRun, AgentStatus, OrchestratorState, PipelineStage};
+    use crate::orchestrator::{AgentRun, AgentStatus, OrchestratorState, PipelineStage, RunConfig};
     use std::collections::HashMap;
 
     fn make_run(id: &str, status: AgentStatus, stage: PipelineStage) -> AgentRun {
@@ -192,6 +218,18 @@ mod tests {
             make_run("run-2", AgentStatus::Failed, PipelineStage::Testing),
         );
 
+        let mut approval_gates = HashMap::new();
+        approval_gates.insert("testing".to_string(), true);
+        let config = RunConfig {
+            agent_type: "codex".to_string(),
+            auto_approve: false,
+            max_concurrent: 5,
+            poll_interval_secs: 30,
+            issue_label: Some("autofix".to_string()),
+            approval_gates,
+            ..RunConfig::default()
+        };
+
         let original = PersistedState {
             repo: Some("test/repo".to_string()),
             repos: vec!["test/repo".to_string()],
@@ -200,6 +238,7 @@ mod tests {
             total_output_tokens: 2000,
             total_cost_usd: 0.50,
             total_runtime_secs: 120.0,
+            config: config.clone(),
         };
 
         let json = serde_json::to_string_pretty(&original).unwrap();
@@ -211,6 +250,7 @@ mod tests {
         assert_eq!(loaded.total_output_tokens, 2000);
         assert!((loaded.total_cost_usd - 0.50).abs() < f64::EPSILON);
         assert!((loaded.total_runtime_secs - 120.0).abs() < f64::EPSILON);
+        assert_eq!(loaded.config, config);
 
         let run1 = loaded.runs.get("run-1").unwrap();
         assert_eq!(run1.status, AgentStatus::Completed);
@@ -220,11 +260,34 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_persisted_state_defaults_config() {
+        let legacy_json = r#"{
+            "repo": "test/repo",
+            "runs": {}
+        }"#;
+
+        let loaded: PersistedState = serde_json::from_str(legacy_json).unwrap();
+
+        assert_eq!(loaded.repo, Some("test/repo".to_string()));
+        assert!(loaded.repos.is_empty());
+        assert!(loaded.runs.is_empty());
+        assert_eq!(loaded.total_input_tokens, 0);
+        assert_eq!(loaded.total_output_tokens, 0);
+        assert!((loaded.total_cost_usd - 0.0).abs() < f64::EPSILON);
+        assert!((loaded.total_runtime_secs - 0.0).abs() < f64::EPSILON);
+        assert_eq!(loaded.config, RunConfig::default());
+    }
+
+    #[test]
     fn test_load_marks_running_as_interrupted() {
         let mut runs = HashMap::new();
         runs.insert(
             "run-active".to_string(),
-            make_run("run-active", AgentStatus::Running, PipelineStage::CodeReview),
+            make_run(
+                "run-active",
+                AgentStatus::Running,
+                PipelineStage::CodeReview,
+            ),
         );
         runs.insert(
             "run-prep".to_string(),
@@ -243,6 +306,7 @@ mod tests {
             total_output_tokens: 0,
             total_cost_usd: 0.0,
             total_runtime_secs: 0.0,
+            config: RunConfig::default(),
         };
 
         // Simulate what load_state does: mark Running/Preparing as Interrupted
@@ -250,8 +314,7 @@ mod tests {
         for run in loaded.runs.values_mut() {
             if run.status == AgentStatus::Running || run.status == AgentStatus::Preparing {
                 run.status = AgentStatus::Interrupted;
-                run.error =
-                    Some("App was restarted while this run was in progress".to_string());
+                run.error = Some("App was restarted while this run was in progress".to_string());
                 if run.finished_at.is_none() {
                     run.finished_at = Some("2026-01-01T00:01:00Z".to_string());
                 }
@@ -332,6 +395,7 @@ mod tests {
             total_output_tokens: 75000,
             total_cost_usd: 3.75,
             total_runtime_secs: 600.0,
+            config: RunConfig::default(),
         };
 
         let json = serde_json::to_string(&persisted).unwrap();
