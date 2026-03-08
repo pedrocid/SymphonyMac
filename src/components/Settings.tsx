@@ -36,6 +36,13 @@ export function Settings() {
     workspace_ttl_days: 7,
     max_concurrent_by_stage: {},
     stage_prompts: {},
+    hooks: {
+      after_create: null,
+      before_run: null,
+      after_run: null,
+      before_remove: null,
+      timeout_secs: 60,
+    },
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -406,6 +413,113 @@ export function Settings() {
                 />
                 <p className="text-xs text-[#8b949e] mt-1">
                   Workspaces older than this are cleaned up on app startup. Set to 0 to disable.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Lifecycle Hooks */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-1">Lifecycle Hooks</h3>
+            <p className="text-xs text-[#8b949e] mb-4">
+              Shell commands executed at key points in the workspace lifecycle.
+              Commands run in the workspace directory.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-1">after_create</label>
+                <input
+                  type="text"
+                  placeholder="e.g., npm install && npm run build"
+                  value={config.hooks.after_create || ""}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      hooks: { ...config.hooks, after_create: e.target.value || null },
+                    })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58] font-mono"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Runs after a new workspace is cloned. Failure aborts the operation.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-1">before_run</label>
+                <input
+                  type="text"
+                  placeholder="e.g., git pull origin main"
+                  value={config.hooks.before_run || ""}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      hooks: { ...config.hooks, before_run: e.target.value || null },
+                    })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58] font-mono"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Runs before each agent attempt. Failure aborts the run.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-1">after_run</label>
+                <input
+                  type="text"
+                  placeholder="e.g., cp -r ./coverage /tmp/artifacts/"
+                  value={config.hooks.after_run || ""}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      hooks: { ...config.hooks, after_run: e.target.value || null },
+                    })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58] font-mono"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Runs after each agent attempt (success or failure). Failure is logged but ignored.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-1">before_remove</label>
+                <input
+                  type="text"
+                  placeholder="e.g., tar czf /tmp/workspace-backup.tar.gz ."
+                  value={config.hooks.before_remove || ""}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      hooks: { ...config.hooks, before_remove: e.target.value || null },
+                    })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58] font-mono"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Runs before workspace deletion. Failure is logged but ignored.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">Hook Timeout (seconds)</label>
+                <input
+                  type="number"
+                  min={5}
+                  max={600}
+                  value={config.hooks.timeout_secs}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      hooks: { ...config.hooks, timeout_secs: parseInt(e.target.value) || 60 },
+                    })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Maximum time each hook is allowed to run before being killed.
                 </p>
               </div>
             </div>

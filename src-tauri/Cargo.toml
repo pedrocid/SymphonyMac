@@ -32,3 +32,6 @@ tauri-plugin-notification = "2"
 cocoa = "0.26"
 objc = "0.2"
 
+[dev-dependencies]
+tempfile = "3"
+

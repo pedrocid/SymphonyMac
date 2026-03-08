@@ -421,7 +421,7 @@ pub async fn launch_agent(
         s.config.clone()
     };
 
-    let workspace_path = workspace::ensure_workspace(&repo, issue_number)?;
+    let workspace_path = workspace::ensure_workspace(&repo, issue_number, &config.hooks)?;
 
     let stage_label = stage.to_string();
 
@@ -548,6 +548,42 @@ async fn run_agent_process(
 ) {
     let stage_label = stage.to_string();
     let path_env = crate::paths::build_path_env();
+
+    // Run before_run hook (failure aborts the agent run)
+    let hooks = {
+        let s = state.lock().await;
+        s.config.hooks.clone()
+    };
+    if let Some(ref cmd) = hooks.before_run {
+        let hook_result = workspace::execute_hook_async(
+            "before_run",
+            cmd,
+            &workspace_path,
+            hooks.timeout_secs,
+        )
+        .await;
+        if let Err(e) = hook_result {
+            let error_msg = format!("before_run hook failed: {}", e);
+            let mut s = state.lock().await;
+            if let Some(run) = s.runs.get_mut(&run_id) {
+                run.status = AgentStatus::Failed;
+                run.error = Some(error_msg.clone());
+                run.finished_at = Some(Utc::now().to_rfc3339());
+                run.logs.push(error_msg);
+            }
+            drop(s);
+            let _ = app.emit(
+                "agent-status-changed",
+                serde_json::json!({
+                    "run_id": &run_id,
+                    "status": "failed",
+                    "stage": &stage_label,
+                }),
+            );
+            update_dock_badge(&state).await;
+            return;
+        }
+    }
 
     // Update status to running
     {
@@ -766,6 +802,31 @@ async fn run_agent_process(
         }
     }
 
+    // Run after_run hook (failure is logged but ignored)
+    {
+        let hooks = {
+            let s = state.lock().await;
+            s.config.hooks.clone()
+        };
+        if let Some(ref cmd) = hooks.after_run {
+            if let Err(e) = workspace::execute_hook_async(
+                "after_run",
+                cmd,
+                &workspace_path,
+                hooks.timeout_secs,
+            )
+            .await
+            {
+                let warning = format!("[hook] after_run failed (ignored): {}", e);
+                logs::append_log_line(&run_id, &warning);
+                let mut s = state.lock().await;
+                if let Some(run) = s.runs.get_mut(&run_id) {
+                    run.logs.push(warning);
+                }
+            }
+        }
+    }
+
     // RETRY LOGIC: If the agent failed, check if we can retry
     if !succeeded {
         let (current_attempt, max_retries, retry_backoff, error_log) = {
@@ -808,10 +869,11 @@ async fn run_agent_process(
             );
         }
         let should_cleanup = s.config.cleanup_on_failure;
+        let cleanup_hooks = s.config.hooks.clone();
         drop(s);
         update_dock_badge(&state).await;
         if should_cleanup {
-            let _ = workspace::cleanup_workspace(&repo, issue_number);
+            let _ = workspace::cleanup_workspace(&repo, issue_number, &cleanup_hooks);
         }
     }
 
@@ -973,7 +1035,13 @@ async fn run_agent_process(
                 update_dock_badge(&state).await;
 
                 // Clean up the workspace clone
-                let _ = workspace::cleanup_workspace(&repo, issue_number);
+                {
+                    let cleanup_hooks = {
+                        let s = state.lock().await;
+                        s.config.hooks.clone()
+                    };
+                    let _ = workspace::cleanup_workspace(&repo, issue_number, &cleanup_hooks);
+                }
 
                 None
             } // end else (merge_verified)
@@ -1365,6 +1433,7 @@ pub async fn stop_agent(
             repo_issue = Some((run.repo.clone(), run.issue_number));
         }
         let should_cleanup = s.config.cleanup_on_stop;
+        let stop_hooks = s.config.hooks.clone();
         drop(s);
         let _ = app.emit(
             "agent-status-changed",
@@ -1375,7 +1444,7 @@ pub async fn stop_agent(
         );
         if should_cleanup {
             if let Some((repo, issue_number)) = repo_issue {
-                let _ = workspace::cleanup_workspace(&repo, issue_number);
+                let _ = workspace::cleanup_workspace(&repo, issue_number, &stop_hooks);
             }
         }
         Ok(())

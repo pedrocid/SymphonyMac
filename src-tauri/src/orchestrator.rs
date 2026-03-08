@@ -70,6 +70,32 @@ pub struct AgentRun {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleHooks {
+    /// Runs after a new workspace is created (e.g., npm install). Failure aborts.
+    pub after_create: Option<String>,
+    /// Runs before each agent attempt (e.g., git pull). Failure aborts.
+    pub before_run: Option<String>,
+    /// Runs after each agent attempt, success or failure. Failure is logged but ignored.
+    pub after_run: Option<String>,
+    /// Runs before workspace deletion. Failure is logged but ignored.
+    pub before_remove: Option<String>,
+    /// Timeout in seconds for each hook (default 60).
+    pub timeout_secs: u64,
+}
+
+impl Default for LifecycleHooks {
+    fn default() -> Self {
+        Self {
+            after_create: None,
+            before_run: None,
+            after_run: None,
+            before_remove: None,
+            timeout_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunConfig {
     pub agent_type: String,
     pub auto_approve: bool,
@@ -88,6 +114,8 @@ pub struct RunConfig {
     pub max_concurrent_by_stage: HashMap<String, usize>,
     #[serde(default)]
     pub stage_prompts: HashMap<String, String>,
+    #[serde(default)]
+    pub hooks: LifecycleHooks,
 }
 
 impl Default for RunConfig {
@@ -108,6 +136,7 @@ impl Default for RunConfig {
             workspace_ttl_days: 7,
             max_concurrent_by_stage: HashMap::new(),
             stage_prompts: HashMap::new(),
+            hooks: LifecycleHooks::default(),
         }
     }
 }
