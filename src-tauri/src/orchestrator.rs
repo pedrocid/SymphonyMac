@@ -1,10 +1,17 @@
-use crate::github;
 use crate::SharedState;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 use ts_rs::TS;
+
+mod reconciliation;
+mod scan;
+mod scheduler;
+
+pub use scheduler::{
+    can_launch_stage, compute_skipped_stages, is_gate_enabled, next_pipeline_stage,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
@@ -50,7 +57,7 @@ impl<'de> Deserialize<'de> for AgentStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "contracts.ts")]
 pub enum PipelineStage {
@@ -382,86 +389,6 @@ impl Default for RunConfig {
     }
 }
 
-/// Given an issue's labels and the configured skip-label mappings, return the
-/// list of pipeline stages that should be skipped for this issue.
-/// Only CodeReview and Testing can be skipped.
-pub fn compute_skipped_stages(
-    issue_labels: &[String],
-    skip_labels: &HashMap<String, Vec<String>>,
-) -> Vec<PipelineStage> {
-    let mut skipped = Vec::new();
-    for label in issue_labels {
-        let label_lower = label.to_lowercase();
-        for (skip_label, stages) in skip_labels {
-            if label_lower == skip_label.to_lowercase() {
-                for stage_name in stages {
-                    let stage = match stage_name.as_str() {
-                        "code_review" => PipelineStage::CodeReview,
-                        "testing" => PipelineStage::Testing,
-                        _ => continue, // Implement and Merge cannot be skipped
-                    };
-                    if !skipped.contains(&stage) {
-                        skipped.push(stage);
-                    }
-                }
-            }
-        }
-    }
-    skipped
-}
-
-/// Return the next pipeline stage after `current`, skipping any stages in `skipped`.
-/// Returns None if there is no next stage (i.e. current is Merge or Done).
-pub fn next_pipeline_stage(
-    current: &PipelineStage,
-    skipped: &[PipelineStage],
-) -> Option<PipelineStage> {
-    let chain = [
-        PipelineStage::Implement,
-        PipelineStage::CodeReview,
-        PipelineStage::Testing,
-        PipelineStage::Merge,
-    ];
-    let current_idx = chain.iter().position(|s| s == current)?;
-    for next in &chain[current_idx + 1..] {
-        if !skipped.contains(next) {
-            return Some(next.clone());
-        }
-    }
-    None
-}
-
-/// Returns the priority rank of an issue based on its labels and the configured priority ordering.
-/// Lower rank = higher priority. Issues without any priority label get `usize::MAX`.
-fn issue_priority_rank(issue: &crate::github::Issue, priority_labels: &[String]) -> usize {
-    let mut best = usize::MAX;
-    for label in &issue.labels {
-        let label_lower = label.to_lowercase();
-        for (rank, priority) in priority_labels.iter().enumerate() {
-            if rank >= best {
-                break;
-            }
-            if label_lower == priority.to_lowercase() {
-                best = rank;
-                break;
-            }
-        }
-    }
-    best
-}
-
-/// Sort issues for dispatch: priority labels ascending, created_at oldest first, issue number as tiebreaker.
-fn sort_issues_for_dispatch(issues: &mut [crate::github::Issue], priority_labels: &[String]) {
-    issues.sort_by(|a, b| {
-        let rank_a = issue_priority_rank(a, priority_labels);
-        let rank_b = issue_priority_rank(b, priority_labels);
-        rank_a
-            .cmp(&rank_b)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-            .then_with(|| a.number.cmp(&b.number))
-    });
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "contracts.ts")]
 pub struct OrchestratorOverview {
@@ -618,12 +545,7 @@ pub async fn update_config(
     config: RunConfig,
 ) -> Result<(), String> {
     let mut s = state.lock().await;
-    let previous_config = s.config.clone();
     s.config = config;
-    if let Err(err) = s.try_persist() {
-        s.config = previous_config;
-        return Err(format!("Failed to save settings: {}", err));
-    }
     Ok(())
 }
 
@@ -816,84 +738,6 @@ pub async fn resume_pipeline(
     .map_err(|e| format!("Failed to resume pipeline: {}", e))
 }
 
-/// Reconcile active runs against current GitHub issue state.
-/// Stops agents for issues that have been closed externally.
-async fn reconcile_active_runs(app: &AppHandle, state: &SharedState) {
-    // Collect active runs' info while holding the lock briefly
-    let active_runs: Vec<(String, u64, String)> = {
-        let s = state.lock().await;
-        s.runs
-            .values()
-            .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-            .map(|r| (r.id.clone(), r.issue_number, r.repo.clone()))
-            .collect()
-    };
-
-    if active_runs.is_empty() {
-        return;
-    }
-
-    // Deduplicate (repo, issue_number) pairs to avoid redundant API calls
-    let mut checked_issues: std::collections::HashMap<(String, u64), bool> =
-        std::collections::HashMap::new();
-
-    for (run_id, issue_number, repo) in &active_runs {
-        let cache_key = (repo.clone(), *issue_number);
-        let is_open = if let Some(&cached) = checked_issues.get(&cache_key) {
-            cached
-        } else {
-            let open = github::is_issue_open(repo, *issue_number).unwrap_or(true);
-            checked_issues.insert(cache_key, open);
-            open
-        };
-
-        if !is_open {
-            let _ = app.emit(
-                "orchestrator-reconcile",
-                serde_json::json!({
-                    "run_id": run_id,
-                    "issue_number": issue_number,
-                    "reason": "issue_closed",
-                }),
-            );
-
-            // Stop the agent: kill process, update state, optionally clean up
-            let mut s = state.lock().await;
-            if let Some(pid) = s.agent_pids.remove(run_id) {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-            }
-            if let Some(run) = s.runs.get_mut(run_id) {
-                run.status = AgentStatus::Stopped;
-                run.finished_at = Some(Utc::now().to_rfc3339());
-                run.logs.push(format!(
-                    "[reconciler] Stopped: issue #{} was closed externally",
-                    issue_number
-                ));
-                run.error = Some(format!("Issue #{} closed externally", issue_number));
-            }
-            s.persist();
-            let should_cleanup = s.config.cleanup_on_stop;
-            let hooks = s.config.hooks.clone();
-            drop(s);
-
-            let _ = app.emit(
-                "agent-status-changed",
-                serde_json::json!({
-                    "run_id": run_id,
-                    "status": "stopped",
-                    "reason": "issue_closed",
-                }),
-            );
-
-            if should_cleanup {
-                let _ = crate::workspace::cleanup_workspace(repo, *issue_number, &hooks);
-            }
-        }
-    }
-}
-
 async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
     let mut all_processed_notified = false;
 
@@ -901,21 +745,19 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
         let (
             should_stop,
             poll_interval,
-            max_concurrent,
-            label,
-            stage_limits,
-            priority_labels,
-            skip_labels,
+            issue_label,
+            notifications_enabled,
+            notification_sound,
+            scheduler_config,
         ) = {
             let s = state.lock().await;
             (
                 s.stop_flag,
                 s.config.poll_interval_secs,
-                s.config.max_concurrent,
                 s.config.issue_label.clone(),
-                s.config.max_concurrent_by_stage.clone(),
-                s.config.priority_labels.clone(),
-                s.config.stage_skip_labels.clone(),
+                s.config.notifications_enabled,
+                s.config.notification_sound,
+                scheduler::SchedulerConfig::from(&s.config),
             )
         };
 
@@ -923,8 +765,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
             break;
         }
 
-        // ---- RECONCILIATION: Stop agents for externally-closed issues ----
-        reconcile_active_runs(&app, &state).await;
+        reconciliation::reconcile_active_runs(&app, &state).await;
 
         let _ = app.emit(
             "orchestrator-poll",
@@ -933,240 +774,32 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
             }),
         );
 
-        // ---- STEP 1: Fetch issues and PRs from ALL repos ----
-        // Each issue is tagged with its repo for dispatch
-        let mut all_issues: Vec<(String, github::Issue)> = Vec::new();
-        let mut all_issues_with_pr: std::collections::HashMap<(String, u64), github::PullRequest> =
-            std::collections::HashMap::new();
-        let mut had_fetch_error = false;
+        let snapshot = scan::collect_repository_snapshot(&repos, issue_label).await;
+        emit_scan_errors(&app, &snapshot.fetch_errors);
 
-        for repo in &repos {
-            let issues =
-                match github::list_issues(repo.clone(), Some("open".to_string()), label.clone())
-                    .await
-                {
-                    Ok(issues) => issues,
-                    Err(e) => {
-                        let _ = app.emit(
-                            "orchestrator-error",
-                            serde_json::json!({
-                                "error": format!("Failed to fetch issues from {}: {}", repo, e),
-                            }),
-                        );
-                        had_fetch_error = true;
-                        continue;
-                    }
-                };
-
-            for issue in issues {
-                all_issues.push((repo.clone(), issue));
-            }
-
-            let open_prs = github::list_open_prs(repo.clone())
-                .await
-                .unwrap_or_default();
-            for pr in open_prs {
-                let issue_num = pr
-                    .closes_issue
-                    .or_else(|| github::parse_issue_from_title(&pr.title));
-                if let Some(n) = issue_num {
-                    all_issues_with_pr.insert((repo.clone(), n), pr);
-                }
-            }
-        }
-
-        if all_issues.is_empty() && had_fetch_error {
+        if snapshot.issues.is_empty() && snapshot.has_fetch_errors() {
             tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
             continue;
         }
 
-        // Sort all issues across repos by priority labels, then created_at (oldest first), then issue number
-        {
-            let pl = &priority_labels;
-            all_issues.sort_by(|(_, a), (_, b)| {
-                let rank_a = issue_priority_rank(a, pl);
-                let rank_b = issue_priority_rank(b, pl);
-                rank_a
-                    .cmp(&rank_b)
-                    .then_with(|| a.created_at.cmp(&b.created_at))
-                    .then_with(|| a.number.cmp(&b.number))
-            });
-        }
-
-        // ---- STEP 2: Determine available slots ----
-        let (active_count, active_by_stage) = {
+        let runtime = {
             let s = state.lock().await;
-            let active: Vec<&AgentRun> = s
-                .runs
-                .values()
-                .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-                .collect();
-            let count = active.len();
-            let mut by_stage: HashMap<String, usize> = HashMap::new();
-            for r in &active {
-                *by_stage.entry(r.stage.to_string()).or_insert(0) += 1;
-            }
-            (count, by_stage)
+            scheduler::RuntimeSnapshot::from_state(&s)
         };
-        let available_slots = max_concurrent.saturating_sub(active_count);
-        if available_slots == 0 {
-            tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
-            continue;
+        let schedule = scheduler::plan_dispatch(&snapshot, &runtime, &scheduler_config);
+
+        let no_active = runtime.active_count == 0;
+        if schedule.all_issues_accounted_for && no_active && !all_processed_notified {
+            if notifications_enabled {
+                crate::notification::notify_all_processed(&app, notification_sound);
+            }
+            all_processed_notified = true;
+        } else if !schedule.all_issues_accounted_for || !no_active {
+            all_processed_notified = false;
         }
 
-        // ---- STEP 3: Filter issues that need work ----
-        // Use (repo, issue_number) tuples to avoid cross-repo collisions
-        let (already_working, fully_done, has_any_run) = {
-            let s = state.lock().await;
-            let working: Vec<(String, u64)> = s
-                .runs
-                .values()
-                .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-                .map(|r| (r.repo.clone(), r.issue_number))
-                .collect();
-            let done: Vec<(String, u64)> = s
-                .runs
-                .values()
-                .filter(|r| r.stage == PipelineStage::Done && r.status == AgentStatus::Completed)
-                .map(|r| (r.repo.clone(), r.issue_number))
-                .collect();
-            let any: Vec<(String, u64)> = s
-                .runs
-                .values()
-                .map(|r| (r.repo.clone(), r.issue_number))
-                .collect();
-            (working, done, any)
-        };
-
-        // ---- Check if all issues are processed ----
-        {
-            let s = state.lock().await;
-            let all_done = !all_issues.is_empty()
-                && all_issues.iter().all(|(repo, issue)| {
-                    let key = (repo.clone(), issue.number);
-                    already_working.contains(&key)
-                        || fully_done.contains(&key)
-                        || has_any_run.contains(&key)
-                });
-            let no_active = active_count == 0;
-            if all_done && no_active && !all_processed_notified {
-                if s.config.notifications_enabled {
-                    crate::notification::notify_all_processed(&app, s.config.notification_sound);
-                }
-                all_processed_notified = true;
-            } else if !all_done || !no_active {
-                all_processed_notified = false;
-            }
-        }
-
-        // ---- STEP 4: Dispatch issues ----
-        let mut used_slots = 0usize;
-        let mut blocked_issues: Vec<(String, u64, Vec<u64>)> = Vec::new();
-        let mut stage_slots_used: HashMap<String, usize> = HashMap::new();
-
-        for (repo, issue) in &all_issues {
-            if used_slots >= available_slots {
-                break;
-            }
-
-            let key = (repo.clone(), issue.number);
-
-            // Skip already active, fully done, or already has a run
-            if already_working.contains(&key)
-                || fully_done.contains(&key)
-                || has_any_run.contains(&key)
-            {
-                continue;
-            }
-
-            // Check for blockers in issue body
-            let body_text = issue.body.as_deref().unwrap_or("");
-            let blocker_nums = github::parse_blockers(body_text);
-            if !blocker_nums.is_empty() {
-                let open_blockers = github::check_blockers_open(repo, &blocker_nums);
-                if !open_blockers.is_empty() {
-                    blocked_issues.push((repo.clone(), issue.number, open_blockers.clone()));
-                    let _ = app.emit(
-                        "orchestrator-blocked",
-                        serde_json::json!({
-                            "issue_number": issue.number,
-                            "blocked_by": open_blockers,
-                        }),
-                    );
-                    continue;
-                }
-            }
-
-            // Compute which stages to skip based on issue labels
-            let skipped = compute_skipped_stages(&issue.labels, &skip_labels);
-
-            // Decide which stage to start at
-            let pr_key = (repo.clone(), issue.number);
-            let (stage, title, body) = if let Some(pr) = all_issues_with_pr.get(&pr_key) {
-                // This issue already has a PR → start at Code Review (or next non-skipped)
-                let mut start = PipelineStage::CodeReview;
-                if skipped.contains(&start) {
-                    start = next_pipeline_stage(&PipelineStage::Implement, &skipped)
-                        .unwrap_or(PipelineStage::Merge);
-                }
-                (start, pr.title.clone(), pr.body.clone().unwrap_or_default())
-            } else {
-                // No PR → start at Implement (always required)
-                (
-                    PipelineStage::Implement,
-                    issue.title.clone(),
-                    issue.body.clone().unwrap_or_default(),
-                )
-            };
-
-            // Check per-stage concurrency limit
-            let stage_name = stage.to_string();
-            if let Some(&limit) = stage_limits.get(&stage_name) {
-                if limit > 0 {
-                    let current = active_by_stage.get(&stage_name).copied().unwrap_or(0)
-                        + stage_slots_used.get(&stage_name).copied().unwrap_or(0);
-                    if current >= limit {
-                        continue; // Skip: per-stage limit reached
-                    }
-                }
-            }
-
-            if let Err(e) = crate::agent::launch_agent(
-                app.clone(),
-                state.clone(),
-                repo.clone(),
-                issue.number,
-                title,
-                body,
-                stage.clone(),
-                issue.labels.clone(),
-            )
-            .await
-            {
-                let _ = app.emit("orchestrator-error", serde_json::json!({
-                    "error": format!("Failed to launch {} agent for {}#{}: {}", stage, repo, issue.number, e),
-                }));
-            } else {
-                used_slots += 1;
-                *stage_slots_used.entry(stage_name).or_insert(0) += 1;
-            }
-        }
-
-        // Emit the full list of currently blocked issues for the UI
-        // Always emit so the UI clears stale blocked state when blockers resolve
-        let _ = app.emit(
-            "orchestrator-blocked-list",
-            BlockedIssueListEvent {
-                blocked: blocked_issues
-                    .into_iter()
-                    .map(|(repo, issue_number, blocked_by)| BlockedIssue {
-                        repo,
-                        issue_number,
-                        blocked_by,
-                    })
-                    .collect(),
-            },
-        );
+        emit_blocked_issues(&app, &schedule.blocked);
+        launch_scheduled_runs(&app, &state, &schedule.launches).await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
     }
@@ -1176,71 +809,78 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
     s.persist();
 }
 
-/// Check whether an approval gate is enabled for the given stage.
-pub fn is_gate_enabled(config: &RunConfig, stage: &PipelineStage) -> bool {
-    let stage_name = stage.to_string();
-    config
-        .approval_gates
-        .get(&stage_name)
-        .copied()
-        .unwrap_or(false)
+fn emit_scan_errors(app: &AppHandle, errors: &[String]) {
+    for error in errors {
+        let _ = app.emit(
+            "orchestrator-error",
+            serde_json::json!({
+                "error": error,
+            }),
+        );
+    }
 }
 
-/// Check whether an additional agent for the given stage can be launched
-/// without exceeding the per-stage (or global) concurrency limit.
-pub fn can_launch_stage(state: &OrchestratorState, stage: &PipelineStage) -> bool {
-    let active_count = state
-        .runs
-        .values()
-        .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-        .count();
-
-    // Global limit
-    if active_count >= state.config.max_concurrent {
-        return false;
+fn emit_blocked_issues(app: &AppHandle, blocked: &[scheduler::BlockedIssue]) {
+    for blocked_issue in blocked {
+        let _ = app.emit(
+            "orchestrator-blocked",
+            serde_json::json!({
+                "issue_number": blocked_issue.issue_number,
+                "blocked_by": &blocked_issue.blocked_by,
+            }),
+        );
     }
 
-    // Per-stage limit (0 means use global only)
-    let stage_name = stage.to_string();
-    if let Some(&limit) = state.config.max_concurrent_by_stage.get(&stage_name) {
-        if limit > 0 {
-            let stage_count = state
-                .runs
-                .values()
-                .filter(|r| {
-                    (r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-                        && r.stage.to_string() == stage_name
+    let _ = app.emit(
+        "orchestrator-blocked-list",
+        BlockedIssueListEvent {
+            blocked: blocked
+                .iter()
+                .map(|b| BlockedIssue {
+                    repo: b.repo.clone(),
+                    issue_number: b.issue_number,
+                    blocked_by: b.blocked_by.clone(),
                 })
-                .count();
-            if stage_count >= limit {
-                return false;
-            }
+                .collect(),
+        },
+    );
+}
+
+async fn launch_scheduled_runs(
+    app: &AppHandle,
+    state: &SharedState,
+    launches: &[scheduler::LaunchDecision],
+) {
+    for launch in launches {
+        if let Err(error) = crate::agent::launch_agent(
+            app.clone(),
+            state.clone(),
+            launch.repo.clone(),
+            launch.issue_number,
+            launch.issue_title.clone(),
+            launch.issue_body.clone(),
+            launch.stage.clone(),
+            launch.issue_labels.clone(),
+        )
+        .await
+        {
+            let _ = app.emit(
+                "orchestrator-error",
+                serde_json::json!({
+                    "error": format!(
+                        "Failed to launch {} agent for {}#{}: {}",
+                        launch.stage, launch.repo, launch.issue_number, error
+                    ),
+                }),
+            );
         }
     }
-
-    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::Issue;
-    use std::collections::HashMap;
     use crate::persistence::PersistedState;
-
-    fn make_issue(number: u64, labels: Vec<&str>, created_at: &str) -> Issue {
-        Issue {
-            number,
-            title: format!("Issue #{}", number),
-            body: None,
-            state: "OPEN".to_string(),
-            labels: labels.into_iter().map(|s| s.to_string()).collect(),
-            assignee: None,
-            url: String::new(),
-            created_at: created_at.to_string(),
-            updated_at: String::new(),
-        }
-    }
 
     fn make_run(id: &str, status: AgentStatus, stage: PipelineStage) -> AgentRun {
         AgentRun {
@@ -1371,212 +1011,6 @@ mod tests {
             stage_context: None,
             pending_next_stage: Some("testing".to_string()),
         }
-    }
-
-
-    #[test]
-    fn test_priority_rank_critical_is_first() {
-        let labels = default_priority_labels();
-        let issue = make_issue(1, vec!["priority:critical"], "2024-01-01T00:00:00Z");
-        assert_eq!(issue_priority_rank(&issue, &labels), 0);
-    }
-
-    #[test]
-    fn test_priority_rank_low_is_last_defined() {
-        let labels = default_priority_labels();
-        let issue = make_issue(1, vec!["priority:low"], "2024-01-01T00:00:00Z");
-        assert_eq!(issue_priority_rank(&issue, &labels), 3);
-    }
-
-    #[test]
-    fn test_priority_rank_no_label_is_max() {
-        let labels = default_priority_labels();
-        let issue = make_issue(1, vec!["bug"], "2024-01-01T00:00:00Z");
-        assert_eq!(issue_priority_rank(&issue, &labels), usize::MAX);
-    }
-
-    #[test]
-    fn test_priority_rank_case_insensitive() {
-        let labels = default_priority_labels();
-        let issue = make_issue(1, vec!["Priority:Critical"], "2024-01-01T00:00:00Z");
-        assert_eq!(issue_priority_rank(&issue, &labels), 0);
-    }
-
-    #[test]
-    fn test_priority_rank_multiple_labels_uses_highest() {
-        let labels = default_priority_labels();
-        // Issue has both low and critical labels — should use critical (rank 0), not low (rank 3)
-        let issue = make_issue(
-            1,
-            vec!["priority:low", "priority:critical"],
-            "2024-01-01T00:00:00Z",
-        );
-        assert_eq!(issue_priority_rank(&issue, &labels), 0);
-    }
-
-    #[test]
-    fn test_sort_by_priority_then_date_then_number() {
-        let labels = default_priority_labels();
-        let mut issues = vec![
-            make_issue(3, vec!["priority:low"], "2024-01-01T00:00:00Z"),
-            make_issue(1, vec!["priority:critical"], "2024-01-02T00:00:00Z"),
-            make_issue(2, vec!["priority:high"], "2024-01-01T00:00:00Z"),
-            make_issue(4, vec![], "2024-01-01T00:00:00Z"),
-            make_issue(5, vec!["priority:critical"], "2024-01-01T00:00:00Z"),
-        ];
-        sort_issues_for_dispatch(&mut issues, &labels);
-
-        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
-        // critical oldest first (5 before 1), then high (2), then low (3), then unlabeled (4)
-        assert_eq!(numbers, vec![5, 1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn test_sort_same_priority_same_date_uses_number() {
-        let labels = default_priority_labels();
-        let mut issues = vec![
-            make_issue(10, vec!["priority:high"], "2024-01-01T00:00:00Z"),
-            make_issue(5, vec!["priority:high"], "2024-01-01T00:00:00Z"),
-        ];
-        sort_issues_for_dispatch(&mut issues, &labels);
-
-        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
-        assert_eq!(numbers, vec![5, 10]);
-    }
-
-    #[test]
-    fn test_sort_unlabeled_fifo() {
-        let labels = default_priority_labels();
-        let mut issues = vec![
-            make_issue(3, vec![], "2024-01-03T00:00:00Z"),
-            make_issue(1, vec![], "2024-01-01T00:00:00Z"),
-            make_issue(2, vec![], "2024-01-02T00:00:00Z"),
-        ];
-        sort_issues_for_dispatch(&mut issues, &labels);
-
-        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
-        assert_eq!(numbers, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn test_sort_custom_priority_labels() {
-        let labels = vec!["urgent".to_string(), "normal".to_string()];
-        let mut issues = vec![
-            make_issue(1, vec!["normal"], "2024-01-01T00:00:00Z"),
-            make_issue(2, vec!["urgent"], "2024-01-01T00:00:00Z"),
-            make_issue(3, vec![], "2024-01-01T00:00:00Z"),
-        ];
-        sort_issues_for_dispatch(&mut issues, &labels);
-
-        let numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
-        assert_eq!(numbers, vec![2, 1, 3]);
-    }
-
-    #[test]
-    fn test_compute_skipped_stages_skip_testing() {
-        let skip_labels = default_stage_skip_labels();
-        let issue_labels = vec!["skip:testing".to_string()];
-        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
-        assert_eq!(skipped, vec![PipelineStage::Testing]);
-    }
-
-    #[test]
-    fn test_compute_skipped_stages_skip_code_review() {
-        let skip_labels = default_stage_skip_labels();
-        let issue_labels = vec!["skip:code-review".to_string()];
-        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
-        assert_eq!(skipped, vec![PipelineStage::CodeReview]);
-    }
-
-    #[test]
-    fn test_compute_skipped_stages_docs_only() {
-        let skip_labels = default_stage_skip_labels();
-        let issue_labels = vec!["docs-only".to_string()];
-        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
-        assert!(skipped.contains(&PipelineStage::CodeReview));
-        assert!(skipped.contains(&PipelineStage::Testing));
-        assert_eq!(skipped.len(), 2);
-    }
-
-    #[test]
-    fn test_compute_skipped_stages_case_insensitive() {
-        let skip_labels = default_stage_skip_labels();
-        let issue_labels = vec!["Skip:Testing".to_string()];
-        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
-        assert_eq!(skipped, vec![PipelineStage::Testing]);
-    }
-
-    #[test]
-    fn test_compute_skipped_stages_no_matching_labels() {
-        let skip_labels = default_stage_skip_labels();
-        let issue_labels = vec!["bug".to_string(), "priority:high".to_string()];
-        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
-        assert!(skipped.is_empty());
-    }
-
-    #[test]
-    fn test_compute_skipped_stages_cannot_skip_implement_or_merge() {
-        let mut skip_labels = HashMap::new();
-        skip_labels.insert(
-            "skip-all".to_string(),
-            vec![
-                "implement".to_string(),
-                "code_review".to_string(),
-                "testing".to_string(),
-                "merge".to_string(),
-            ],
-        );
-        let issue_labels = vec!["skip-all".to_string()];
-        let skipped = compute_skipped_stages(&issue_labels, &skip_labels);
-        // Only CodeReview and Testing can be skipped
-        assert!(skipped.contains(&PipelineStage::CodeReview));
-        assert!(skipped.contains(&PipelineStage::Testing));
-        assert_eq!(skipped.len(), 2);
-    }
-
-    #[test]
-    fn test_next_pipeline_stage_no_skips() {
-        let skipped = vec![];
-        assert_eq!(
-            next_pipeline_stage(&PipelineStage::Implement, &skipped),
-            Some(PipelineStage::CodeReview)
-        );
-        assert_eq!(
-            next_pipeline_stage(&PipelineStage::CodeReview, &skipped),
-            Some(PipelineStage::Testing)
-        );
-        assert_eq!(
-            next_pipeline_stage(&PipelineStage::Testing, &skipped),
-            Some(PipelineStage::Merge)
-        );
-        assert_eq!(next_pipeline_stage(&PipelineStage::Merge, &skipped), None);
-    }
-
-    #[test]
-    fn test_next_pipeline_stage_skip_code_review() {
-        let skipped = vec![PipelineStage::CodeReview];
-        assert_eq!(
-            next_pipeline_stage(&PipelineStage::Implement, &skipped),
-            Some(PipelineStage::Testing)
-        );
-    }
-
-    #[test]
-    fn test_next_pipeline_stage_skip_both() {
-        let skipped = vec![PipelineStage::CodeReview, PipelineStage::Testing];
-        assert_eq!(
-            next_pipeline_stage(&PipelineStage::Implement, &skipped),
-            Some(PipelineStage::Merge)
-        );
-    }
-
-    #[test]
-    fn test_next_pipeline_stage_skip_testing() {
-        let skipped = vec![PipelineStage::Testing];
-        assert_eq!(
-            next_pipeline_stage(&PipelineStage::CodeReview, &skipped),
-            Some(PipelineStage::Merge)
-        );
     }
 
     #[test]
