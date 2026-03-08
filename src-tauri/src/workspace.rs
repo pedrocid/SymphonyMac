@@ -69,31 +69,64 @@ pub fn execute_hook(
 }
 
 /// Async wrapper that enforces a timeout on hook execution.
+/// Uses tokio::process::Command so the child process can be killed on timeout.
 pub async fn execute_hook_async(
     hook_name: &str,
     command: &str,
     workspace_path: &std::path::Path,
     timeout_secs: u64,
 ) -> Result<String, String> {
-    let hook_name = hook_name.to_string();
-    let command = command.to_string();
-    let workspace_path = workspace_path.to_path_buf();
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let child = tokio::process::Command::new("sh")
+        .args(["-c", trimmed])
+        .current_dir(workspace_path)
+        .env("PATH", crate::paths::build_path_env())
+        .env("SYMPHONY_HOOK", hook_name)
+        .env(
+            "SYMPHONY_WORKSPACE",
+            workspace_path.to_string_lossy().as_ref(),
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Hook '{}' failed to start: {}", hook_name, e))?;
 
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        tokio::task::spawn_blocking(move || {
-            execute_hook(&hook_name, &command, &workspace_path, timeout_secs)
-        }),
+        child.wait_with_output(),
     )
     .await;
 
     match result {
-        Ok(Ok(inner)) => inner,
-        Ok(Err(e)) => Err(format!("Hook task panicked: {}", e)),
-        Err(_) => Err(format!(
-            "Hook timed out after {}s",
-            timeout_secs
-        )),
+        Ok(Ok(output)) => {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Err(format!(
+                    "Hook '{}' exited with code {}: {}{}",
+                    hook_name,
+                    output.status.code().unwrap_or(-1),
+                    stderr.trim(),
+                    if !stdout.trim().is_empty() {
+                        format!("\nstdout: {}", stdout.trim())
+                    } else {
+                        String::new()
+                    }
+                ))
+            } else {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            }
+        }
+        Ok(Err(e)) => Err(format!("Hook '{}' I/O error: {}", hook_name, e)),
+        Err(_) => {
+            // Timeout elapsed — child is killed on drop via kill_on_drop(true)
+            Err(format!("Hook '{}' timed out after {}s", hook_name, timeout_secs))
+        }
     }
 }
 

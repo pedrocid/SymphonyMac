@@ -1036,8 +1036,11 @@ async fn run_agent_process(
 
                 // Clean up the workspace clone
                 {
-                    let s = state.lock().await;
-                    let _ = workspace::cleanup_workspace(&repo, issue_number, &s.config.hooks);
+                    let cleanup_hooks = {
+                        let s = state.lock().await;
+                        s.config.hooks.clone()
+                    };
+                    let _ = workspace::cleanup_workspace(&repo, issue_number, &cleanup_hooks);
                 }
 
                 None
