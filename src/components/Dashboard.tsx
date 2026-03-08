@@ -135,6 +135,10 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try { await invoke("retry_agent", { runId }); loadStatus(); } catch (e) { setError(String(e)); }
   }
 
+  async function retryAgentFromStage(runId: string, fromStage: string) {
+    try { await invoke("retry_agent_from_stage", { runId, fromStage }); loadStatus(); } catch (e) { setError(String(e)); }
+  }
+
   async function launchIssue(issue: Issue, repo: string) {
     try {
       await invoke("start_single_issue", {
@@ -489,7 +493,19 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                             Stop
                           </button>
                         )}
-                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && (
+                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && card.runStage && card.runStage !== "implement" && (
+                          <button onClick={(e) => { e.stopPropagation(); retryAgentFromStage(card.runId!, card.runStage!); }}
+                            className="text-[#d29922] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
+                            Retry {STAGE_LABELS[card.runStage!] || card.runStage}
+                          </button>
+                        )}
+                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && card.runStage && card.runStage !== "implement" && (
+                          <button onClick={(e) => { e.stopPropagation(); retryAgentFromStage(card.runId!, "implement"); }}
+                            className="text-[#8b949e] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
+                            Restart
+                          </button>
+                        )}
+                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && (!card.runStage || card.runStage === "implement") && (
                           <button onClick={(e) => { e.stopPropagation(); retryAgent(card.runId!); }}
                             className="text-[#d29922] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Retry
