@@ -140,6 +140,7 @@ impl From<crate::orchestrator::AgentStatus> for String {
             crate::orchestrator::AgentStatus::Completed => "completed".to_string(),
             crate::orchestrator::AgentStatus::Failed => "failed".to_string(),
             crate::orchestrator::AgentStatus::Stopped => "stopped".to_string(),
+            crate::orchestrator::AgentStatus::Interrupted => "interrupted".to_string(),
         }
     }
 }

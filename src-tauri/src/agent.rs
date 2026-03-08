@@ -492,6 +492,7 @@ pub async fn launch_agent(
     {
         let mut s = state.lock().await;
         s.runs.insert(run_id.clone(), run);
+        s.persist();
     }
 
     // Persist initial metadata to disk
@@ -604,6 +605,7 @@ async fn run_agent_process(
                 run.finished_at = Some(Utc::now().to_rfc3339());
                 run.logs.push(error_msg);
             }
+            s.persist();
             drop(s);
             let _ = app.emit(
                 "agent-status-changed",
@@ -624,6 +626,7 @@ async fn run_agent_process(
         if let Some(run) = s.runs.get_mut(&run_id) {
             run.status = AgentStatus::Running;
         }
+        s.persist();
     }
     let _ = app.emit(
         "agent-status-changed",
@@ -679,6 +682,7 @@ async fn run_agent_process(
                     s.config.notification_sound,
                 );
             }
+            s.persist();
             drop(s);
             let _ = app.emit(
                 "agent-status-changed",
@@ -852,6 +856,7 @@ async fn run_agent_process(
                         run.logs.push(stall_msg.clone());
                         logs::append_log_line(&stall_run_id, &stall_msg);
                     }
+                    s.persist();
                 }
                 let _ = stall_app.emit(
                     "agent-status-changed",
@@ -1013,6 +1018,7 @@ async fn run_agent_process(
             }
         }
         final_status = if succeeded { "completed" } else { "failed" };
+        s.persist();
     }
 
     // Update metadata on disk with final status, preserving the original started_at
@@ -1167,6 +1173,7 @@ async fn run_agent_process(
                                     s.config.notification_sound,
                                 );
                             }
+                            s.persist();
                             drop(s);
                             let _ = app.emit(
                                 "agent-status-changed",
@@ -1287,6 +1294,7 @@ async fn run_agent_process(
                 {
                     let mut s = state.lock().await;
                     s.runs.insert(done_id.clone(), done_run);
+                    s.persist();
                 }
                 let _ = app.emit(
                     "agent-status-changed",
@@ -1466,6 +1474,7 @@ fn spawn_next_stage(
         {
             let mut s = state.lock().await;
             s.runs.insert(run_id.clone(), run);
+            s.persist();
         }
 
         // Persist metadata for chained stage
@@ -1601,6 +1610,7 @@ fn spawn_retry(
         {
             let mut s = state.lock().await;
             s.runs.insert(run_id.clone(), run);
+            s.persist();
         }
 
         let _ = app.emit(
@@ -1725,8 +1735,8 @@ pub async fn retry_agent(
             .runs
             .get(&run_id)
             .ok_or("Run not found")?;
-        if run.status != AgentStatus::Failed && run.status != AgentStatus::Stopped {
-            return Err("Can only retry failed or stopped runs".to_string());
+        if run.status != AgentStatus::Failed && run.status != AgentStatus::Stopped && run.status != AgentStatus::Interrupted {
+            return Err("Can only retry failed, stopped, or interrupted runs".to_string());
         }
         (
             run.repo.clone(),
@@ -1774,6 +1784,7 @@ pub async fn stop_agent(
         }
         let should_cleanup = s.config.cleanup_on_stop;
         let stop_hooks = s.config.hooks.clone();
+        s.persist();
         drop(s);
         let _ = app.emit(
             "agent-status-changed",

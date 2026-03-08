@@ -13,6 +13,7 @@ pub enum AgentStatus {
     Completed,
     Failed,
     Stopped,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -249,6 +250,22 @@ pub struct OrchestratorState {
 
 impl OrchestratorState {
     pub fn new() -> Self {
+        // Try to load persisted state from disk
+        if let Some(persisted) = crate::persistence::load_state() {
+            return Self {
+                is_running: false,
+                repo: persisted.repo,
+                runs: persisted.runs,
+                config: RunConfig::default(),
+                agent_pids: HashMap::new(),
+                stop_flag: false,
+                total_input_tokens: persisted.total_input_tokens,
+                total_output_tokens: persisted.total_output_tokens,
+                total_cost_usd: persisted.total_cost_usd,
+                total_runtime_secs: persisted.total_runtime_secs,
+            };
+        }
+
         Self {
             is_running: false,
             repo: None,
@@ -261,6 +278,11 @@ impl OrchestratorState {
             total_cost_usd: 0.0,
             total_runtime_secs: 0.0,
         }
+    }
+
+    /// Persist current state to disk. Call after every state transition.
+    pub fn persist(&self) {
+        crate::persistence::save_state(self);
     }
 
     /// Get the latest run for a given issue number
@@ -358,6 +380,7 @@ pub async fn stop_orchestrator(
     let mut s = state.lock().await;
     s.stop_flag = true;
     s.is_running = false;
+    s.persist();
     drop(s);
 
     let _ = app.emit(
@@ -433,6 +456,67 @@ pub async fn get_pipeline_report(
     }
 }
 
+#[tauri::command]
+pub async fn get_interrupted_runs(
+    state: tauri::State<'_, SharedState>,
+) -> Result<Vec<crate::persistence::InterruptedRunInfo>, String> {
+    let s = state.lock().await;
+    Ok(crate::persistence::get_interrupted_runs(&s))
+}
+
+#[tauri::command]
+pub async fn resume_pipeline(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+) -> Result<(), String> {
+    let (repo, issue_number, issue_title, resume_stage) = {
+        let mut s = state.lock().await;
+        let run = s
+            .runs
+            .get(&run_id)
+            .ok_or_else(|| format!("Run {} not found", run_id))?;
+
+        if run.status != AgentStatus::Interrupted {
+            return Err(format!("Run {} is not interrupted (status: {:?})", run_id, run.status));
+        }
+
+        let info = (
+            run.repo.clone(),
+            run.issue_number,
+            run.issue_title.clone(),
+            run.stage.clone(),
+        );
+
+        // Mark the old interrupted run as stopped so it doesn't block dispatch
+        if let Some(run) = s.runs.get_mut(&run_id) {
+            run.status = AgentStatus::Stopped;
+            run.error = Some("Superseded by resumed pipeline".to_string());
+        }
+        s.persist();
+        info
+    };
+
+    // Fetch the issue body from GitHub so the prompt has full context
+    let issue_body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => issue.body.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
+    crate::agent::launch_agent(
+        app,
+        state.inner().clone(),
+        repo,
+        issue_number,
+        issue_title,
+        issue_body,
+        resume_stage,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("Failed to resume pipeline: {}", e))
+}
+
 /// Reconcile active runs against current GitHub issue state.
 /// Stops agents for issues that have been closed externally.
 async fn reconcile_active_runs(app: &AppHandle, state: &SharedState, repo: &str) {
@@ -489,6 +573,7 @@ async fn reconcile_active_runs(app: &AppHandle, state: &SharedState, repo: &str)
                 ));
                 run.error = Some(format!("Issue #{} closed externally", issue_number));
             }
+            s.persist();
             let should_cleanup = s.config.cleanup_on_stop;
             let hooks = s.config.hooks.clone();
             drop(s);
@@ -744,6 +829,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
 
     let mut s = state.lock().await;
     s.is_running = false;
+    s.persist();
 }
 
 /// Check whether an additional agent for the given stage can be launched
