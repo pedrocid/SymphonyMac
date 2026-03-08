@@ -10,6 +10,14 @@ import { PipelineReportView } from "./components/PipelineReportView";
 
 export type View = "repos" | "issues" | "dashboard" | "agents" | "settings";
 
+export interface LifecycleHooks {
+  after_create: string | null;
+  before_run: string | null;
+  after_run: string | null;
+  before_remove: string | null;
+  timeout_secs: number;
+}
+
 export interface RunConfig {
   agent_type: string;
   auto_approve: boolean;
@@ -26,6 +34,7 @@ export interface RunConfig {
   workspace_ttl_days: number;
   max_concurrent_by_stage: Record<string, number>;
   stage_prompts: Record<string, string>;
+  hooks: LifecycleHooks;
 }
 
 function App() {
