@@ -67,6 +67,7 @@ fn build_prompt(
         PipelineStage::Testing => format!(
             "You are a test engineer for repository {repo}.\n\n\
              A Pull Request for issue #{num}: {title} has been reviewed and is ready for testing.\n\n\
+             Issue description:\n{body}\n\n\
              Instructions:\n\
              1. Run: gh pr list --state open --json number,title,headRefName | to find the PR for issue #{num}\n\
              2. Check out the PR branch\n\
@@ -82,12 +83,27 @@ fn build_prompt(
                 - Fix the issues in the code\n\
                 - Commit and push the fixes\n\
                 - Re-run tests to confirm they pass\n\
-             5. If all tests pass, comment on the PR:\n\
-                gh pr comment <PR_NUMBER> --body \"All tests passing. Ready to merge.\"\n\n\
-             Make sure ALL tests pass before finishing.",
+             5. END-TO-END TESTING (CRITICAL):\n\
+                After existing tests pass, you MUST perform end-to-end validation:\n\
+                a) Read the issue title and description above carefully to understand what was fixed or added.\n\
+                b) If the issue describes a specific bug or feature:\n\
+                   - Reproduce the original scenario described in the issue to verify the fix works end-to-end.\n\
+                   - For bugs: try to trigger the original bug and confirm it no longer occurs.\n\
+                   - For features: exercise the new feature through its intended usage path.\n\
+                   - Use the project's actual entry points (CLI commands, API endpoints, scripts, UI) to test, not just unit tests.\n\
+                c) If the issue is too abstract or there is no specific scenario to reproduce:\n\
+                   - Perform a quick smoke test: build the project and run its main entry point to verify nothing is broken.\n\
+                   - For web apps: start the dev server and verify it loads without errors.\n\
+                   - For CLI tools: run the main command with --help or a basic invocation.\n\
+                   - For libraries: run a quick import/usage check.\n\
+                d) If E2E testing reveals issues, fix them, commit, push, and re-test.\n\
+             6. Comment on the PR with your findings:\n\
+                gh pr comment <PR_NUMBER> --body \"Testing completed. Unit tests: PASS. E2E validation: <describe what you tested and results>. Ready to merge.\"\n\n\
+             Make sure ALL tests pass and E2E validation succeeds before finishing.",
             repo = repo,
             num = issue_number,
             title = issue_title,
+            body = issue_body.chars().take(4000).collect::<String>(),
         ),
 
         PipelineStage::Merge => format!(
