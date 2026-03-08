@@ -35,6 +35,7 @@ export interface RunConfig {
   max_concurrent_by_stage: Record<string, number>;
   stage_prompts: Record<string, string>;
   hooks: LifecycleHooks;
+  priority_labels: string[];
 }
 
 function App() {
