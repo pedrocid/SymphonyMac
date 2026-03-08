@@ -54,7 +54,7 @@ async fn collect_active_runs(state: &SharedState) -> Vec<ActiveRunSnapshot> {
         .collect()
 }
 
-fn resolve_closed_issues(active_runs: &[ActiveRunSnapshot]) -> Vec<ClosedIssueAction> {
+async fn resolve_closed_issues(active_runs: &[ActiveRunSnapshot]) -> Vec<ClosedIssueAction> {
     let mut checked_issues: HashMap<(String, u64), bool> = HashMap::new();
     let mut actions = Vec::new();
 
@@ -63,8 +63,10 @@ fn resolve_closed_issues(active_runs: &[ActiveRunSnapshot]) -> Vec<ClosedIssueAc
         let is_open = if let Some(&cached) = checked_issues.get(&cache_key) {
             cached
         } else {
-            let is_open =
-                github::is_issue_open(&active_run.repo, active_run.issue_number).unwrap_or(true);
+            let is_open = github::get_issue_state(&active_run.repo, active_run.issue_number)
+                .await
+                .map(|state| state == "OPEN")
+                .unwrap_or(true);
             checked_issues.insert(cache_key, is_open);
             is_open
         };

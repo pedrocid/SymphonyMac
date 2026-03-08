@@ -63,13 +63,39 @@ pub async fn collect_repository_snapshot(
             }
         }
 
+        // Collect all blocker numbers across issues for batch resolution
+        let mut all_blocker_numbers: Vec<u64> = Vec::new();
+        let mut issue_blockers: Vec<(github::Issue, Vec<u64>)> = Vec::new();
         for issue in issues {
             let blocker_numbers = github::parse_blockers(issue.body.as_deref().unwrap_or(""));
-            let open_blockers = if blocker_numbers.is_empty() {
-                Vec::new()
-            } else {
-                github::check_blockers_open(repo, &blocker_numbers)
-            };
+            for &num in &blocker_numbers {
+                if !all_blocker_numbers.contains(&num) {
+                    all_blocker_numbers.push(num);
+                }
+            }
+            issue_blockers.push((issue, blocker_numbers));
+        }
+
+        // Batch-resolve blocker states with a single GraphQL call
+        let blocker_states = if all_blocker_numbers.is_empty() {
+            HashMap::new()
+        } else {
+            github::get_issue_states(repo, &all_blocker_numbers)
+                .await
+                .unwrap_or_default()
+        };
+
+        for (issue, blocker_numbers) in issue_blockers {
+            let open_blockers: Vec<u64> = blocker_numbers
+                .iter()
+                .filter(|num| {
+                    blocker_states
+                        .get(num)
+                        .map(|state| state == "OPEN")
+                        .unwrap_or(true) // assume blocking on unknown state
+                })
+                .copied()
+                .collect();
 
             snapshot.issues.push(IssueSnapshot {
                 repo: repo.clone(),

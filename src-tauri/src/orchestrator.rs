@@ -531,6 +531,7 @@ impl OrchestratorState {
     }
 }
 
+
 #[tauri::command]
 pub async fn get_status(
     state: tauri::State<'_, SharedState>,
@@ -881,6 +882,7 @@ async fn launch_scheduled_runs(
 mod tests {
     use super::*;
     use crate::persistence::PersistedState;
+    use std::collections::HashMap;
 
     fn make_run(id: &str, status: AgentStatus, stage: PipelineStage) -> AgentRun {
         AgentRun {
