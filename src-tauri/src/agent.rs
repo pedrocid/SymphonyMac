@@ -3,7 +3,9 @@ mod process;
 mod prompt;
 mod runtime;
 
-use self::pipeline::{StageLaunchSpec, prepare_and_register_stage_run, spawn_next_stage};
+use self::pipeline::{
+    PipelineCompletionSpec, StageLaunchSpec, prepare_and_register_stage_run, spawn_next_stage,
+};
 use self::process::run_agent_process;
 use self::runtime::{PendingNextStageUpdate, StatusTransition};
 use crate::orchestrator::{AgentStatus, PipelineStage};
@@ -279,6 +281,23 @@ pub async fn approve_stage(
     };
 
     if next_stage == PipelineStage::Done {
+        let skipped_stages = {
+            let s = state.lock().await;
+            crate::orchestrator::compute_skipped_stages(&issue_labels, &s.config.stage_skip_labels)
+        };
+        pipeline::finish_pipeline(
+            &app,
+            state.inner(),
+            PipelineCompletionSpec {
+                repo,
+                issue_number,
+                issue_title,
+                workspace_path: std::path::PathBuf::from(workspace_path),
+                issue_labels,
+                skipped_stages,
+            },
+        )
+        .await;
         return Ok(());
     }
 

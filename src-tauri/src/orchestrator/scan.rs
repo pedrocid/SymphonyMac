@@ -44,9 +44,15 @@ pub async fn collect_repository_snapshot(
             }
         };
 
-        let pull_requests = github::list_open_prs(repo.clone())
-            .await
-            .unwrap_or_default();
+        let pull_requests = match github::list_open_prs(repo.clone()).await {
+            Ok(pull_requests) => pull_requests,
+            Err(error) => {
+                snapshot
+                    .fetch_errors
+                    .push(format!("Failed to fetch open PRs from {}: {}", repo, error));
+                continue;
+            }
+        };
         let mut prs_by_issue: HashMap<u64, github::PullRequest> = HashMap::new();
         for pr in pull_requests {
             let issue_number = pr
