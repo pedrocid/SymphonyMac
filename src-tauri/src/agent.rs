@@ -890,6 +890,49 @@ async fn run_agent_process(
 
     // If the agent was killed by stall detection, skip normal status handling
     if stalled {
+        // Persist metadata to disk so stall-killed runs show correct final status
+        if let Some(mut meta) = logs::load_meta(&run_id) {
+            meta.finished_at = Some(Utc::now().to_rfc3339());
+            meta.status = "failed".to_string();
+            logs::save_meta(&meta);
+        } else {
+            logs::save_meta(&logs::LogMeta {
+                run_id: run_id.clone(),
+                repo: repo.clone(),
+                issue_number,
+                issue_title: issue_title.clone(),
+                stage: stage_label.clone(),
+                started_at: Utc::now().to_rfc3339(),
+                finished_at: Some(Utc::now().to_rfc3339()),
+                status: "failed".to_string(),
+            });
+        }
+
+        // Run after_run hook (same as normal exit path)
+        {
+            let hooks = {
+                let s = state.lock().await;
+                s.config.hooks.clone()
+            };
+            if let Some(ref cmd) = hooks.after_run {
+                if let Err(e) = workspace::execute_hook_async(
+                    "after_run",
+                    cmd,
+                    &workspace_path,
+                    hooks.timeout_secs,
+                )
+                .await
+                {
+                    let warning = format!("[hook] after_run failed (ignored): {}", e);
+                    logs::append_log_line(&run_id, &warning);
+                    let mut s = state.lock().await;
+                    if let Some(run) = s.runs.get_mut(&run_id) {
+                        run.logs.push(warning);
+                    }
+                }
+            }
+        }
+
         update_dock_badge(&state).await;
 
         // Trigger retry logic for stalled agents
