@@ -273,6 +273,43 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
     None
 }
 
+/// Check if a PR associated with a given issue number is actually merged.
+/// Returns Ok(true) if merged, Ok(false) if still open/closed-not-merged, Err on failure.
+pub fn is_pr_merged_for_issue(repo: &str, issue_number: u64) -> Result<bool, String> {
+    // List all PRs (open and merged) to find one that references this issue
+    let output = run_gh(&[
+        "pr",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "all",
+        "--limit",
+        "50",
+        "--json",
+        "number,title,body,state",
+    ])?;
+
+    let prs: Vec<serde_json::Value> =
+        serde_json::from_str(&output).map_err(|e| format!("Failed to parse PRs: {}", e))?;
+
+    for pr in &prs {
+        let body = pr["body"].as_str().unwrap_or("");
+        let title = pr["title"].as_str().unwrap_or("");
+        let state = pr["state"].as_str().unwrap_or("");
+
+        let references_issue = parse_closes_issue(body) == Some(issue_number)
+            || parse_issue_from_title(title) == Some(issue_number);
+
+        if references_issue {
+            return Ok(state == "MERGED");
+        }
+    }
+
+    // No PR found for this issue
+    Err(format!("No PR found referencing issue #{}", issue_number))
+}
+
 #[tauri::command]
 pub async fn get_issue_detail(repo: String, number: u64) -> Result<Issue, String> {
     let num_str = number.to_string();

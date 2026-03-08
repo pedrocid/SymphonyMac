@@ -111,13 +111,22 @@ fn build_prompt(
              A Pull Request for issue #{num}: {title} has passed code review and all tests.\n\n\
              Instructions:\n\
              1. Run: gh pr list -R {repo} --state open --json number,title,headRefName | to find the PR for issue #{num}\n\
-             2. Merge the PR into the default branch:\n\
+             2. Check out the PR branch and update it against the base branch to detect conflicts BEFORE merging:\n\
+                gh pr checkout <PR_NUMBER> -R {repo}\n\
+                git fetch origin main && git rebase origin/main\n\
+             3. If there are merge conflicts:\n\
+                - Resolve the conflicts in the affected files\n\
+                - Run: git add <resolved_files> && git rebase --continue\n\
+                - Push the updated branch: git push --force-with-lease\n\
+             4. Merge the PR into the default branch:\n\
                 gh pr merge <PR_NUMBER> -R {repo} --merge --delete-branch\n\
-             3. Close the issue if it wasn't auto-closed:\n\
-                gh issue close {num} -R {repo}\n\
-             4. Confirm the merge was successful by checking:\n\
-                gh pr view <PR_NUMBER> -R {repo} --json state\n\n\
-             Do NOT make any code changes. Only merge and close.",
+             5. Confirm the merge was successful by checking:\n\
+                gh pr view <PR_NUMBER> -R {repo} --json state\n\
+                The state MUST be \"MERGED\". If it is not, the merge failed.\n\
+             6. Close the issue if it wasn't auto-closed:\n\
+                gh issue close {num} -R {repo}\n\n\
+             IMPORTANT: If the merge fails due to conflicts that you cannot resolve, \
+             exit with a non-zero exit code so the pipeline knows the merge did not succeed.",
             repo = repo,
             num = issue_number,
             title = issue_title,
@@ -633,7 +642,64 @@ async fn run_agent_process(
             PipelineStage::CodeReview => Some(PipelineStage::Testing),
             PipelineStage::Testing => Some(PipelineStage::Merge),
             PipelineStage::Merge => {
-                // Merge passed → mark as Done with aggregated logs and enriched report
+                // Verify the PR was actually merged before advancing to Done
+                let merge_verified =
+                    match crate::github::is_pr_merged_for_issue(&repo, issue_number) {
+                        Ok(true) => true,
+                        Ok(false) => {
+                            // PR exists but is NOT merged (likely conflicts)
+                            let mut s = state.lock().await;
+                            if let Some(run) = s.runs.get_mut(&run_id) {
+                                run.status = AgentStatus::Failed;
+                                run.error = Some(format!(
+                                    "PR for issue #{} was not merged (possible merge conflicts). \
+                                     The PR needs manual conflict resolution.",
+                                    issue_number
+                                ));
+                            }
+                            if s.config.notifications_enabled {
+                                crate::notification::notify_pipeline_failed(
+                                    &app,
+                                    issue_number,
+                                    "merge",
+                                    s.config.notification_sound,
+                                );
+                            }
+                            drop(s);
+                            let _ = app.emit(
+                                "agent-status-changed",
+                                serde_json::json!({
+                                    "run_id": &run_id,
+                                    "status": "failed",
+                                    "stage": "merge",
+                                    "error": "PR not actually merged - possible conflicts",
+                                }),
+                            );
+                            update_dock_badge(&state).await;
+                            false
+                        }
+                        Err(e) => {
+                            // Could not verify - log warning but proceed
+                            // (e.g. PR was already closed and issue auto-closed)
+                            let log_msg = format!(
+                                "[warning] Could not verify merge status: {}. Proceeding to Done.",
+                                e
+                            );
+                            logs::append_log_line(&run_id, &log_msg);
+                            let mut s = state.lock().await;
+                            if let Some(run) = s.runs.get_mut(&run_id) {
+                                run.logs.push(log_msg);
+                            }
+                            drop(s);
+                            true
+                        }
+                    };
+
+                if !merge_verified {
+                    // Do NOT advance to Done - merge failed
+                    None
+                } else {
+                // Merge verified → mark as Done with aggregated logs and enriched report
                 let done_id = Uuid::new_v4().to_string();
                 let (aggregated_logs, pipeline_report) = {
                     let s = state.lock().await;
@@ -730,6 +796,7 @@ async fn run_agent_process(
                 let _ = workspace::cleanup_workspace(&repo, issue_number);
 
                 None
+            } // end else (merge_verified)
             }
             PipelineStage::Done => None,
         };
