@@ -5,6 +5,7 @@ mod logs;
 mod notification;
 mod orchestrator;
 mod paths;
+mod persistence;
 mod report;
 mod workspace;
 
@@ -57,6 +58,8 @@ pub fn run() {
             orchestrator::export_logs_text,
             orchestrator::export_logs_json,
             orchestrator::list_log_history,
+            orchestrator::get_interrupted_runs,
+            orchestrator::resume_pipeline,
             workspace::list_workspaces,
             workspace::cleanup_old_workspaces,
             workspace::cleanup_single_workspace,

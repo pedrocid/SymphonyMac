@@ -229,8 +229,8 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       continue;
     }
 
-    // Check if latest run failed
-    if (latestRun.status === "failed" || latestRun.status === "stopped") {
+    // Check if latest run failed or was interrupted
+    if (latestRun.status === "failed" || latestRun.status === "stopped" || latestRun.status === "interrupted") {
       failedCards.push(card);
       continue;
     }
@@ -450,7 +450,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                             Stop
                           </button>
                         )}
-                        {(card.runStatus === "failed" || card.runStatus === "stopped") && card.runId && (
+                        {(card.runStatus === "failed" || card.runStatus === "stopped" || card.runStatus === "interrupted") && card.runId && (
                           <button onClick={(e) => { e.stopPropagation(); retryAgent(card.runId!); }}
                             className="text-[#d29922] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Retry
