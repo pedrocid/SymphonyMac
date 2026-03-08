@@ -1,158 +1,155 @@
 # Symphony Mac
 
-A macOS desktop application that orchestrates AI coding agents to automatically implement, review, test, and merge GitHub issues. Built with Tauri v2 (Rust backend + React frontend).
+A macOS desktop application that orchestrates AI coding agents to automatically implement, review, test, and merge GitHub issues.
 
-## How It Works
+Built with Tauri v2 (Rust backend + React frontend).
 
-Symphony connects to your GitHub repositories, picks up open issues, and launches AI agents (Claude Code or Codex CLI) to work through a fully automated pipeline. Each issue progresses through discrete stages, with a separate agent subprocess handling each one.
+![Dashboard](docs/images/dashboard.png)
 
-```
-  GitHub Issues          Symphony Orchestrator              AI Agents
- ┌─────────────┐       ┌──────────────────────┐       ┌──────────────┐
- │  Open Issue  │──────>│  Poll Loop           │──────>│  Claude CLI  │
- │  Open Issue  │       │  - Fetch issues      │       │     or       │
- │  Open Issue  │       │  - Check PR status   │       │  Codex CLI   │
- └─────────────┘       │  - Dispatch agents   │       └──────┬───────┘
-                       │  - Auto-chain stages │              │
-                       └──────────────────────┘              │
-                                  ^                          │
-                                  │    stdout/stderr logs    │
-                                  └──────────────────────────┘
-```
+## What It Does
 
-## Pipeline Stages
+Symphony connects to your GitHub repositories, picks up open issues, and launches AI agents ([Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex CLI](https://github.com/openai/codex)) to work through a fully automated pipeline. Each issue progresses through discrete stages, with a separate agent subprocess handling each one.
 
-Each issue flows through four stages. On success, the next stage launches automatically (auto-chaining). On failure, the stage retries up to a configurable number of attempts.
+You select a repo, start the orchestrator, and Symphony takes care of the rest: implementing features, reviewing code, running tests, and merging PRs -- all in parallel across multiple issues.
+
+## Pipeline
+
+Each issue flows through four stages. On success, the next stage launches automatically. On failure, the stage can be retried (automatically or manually).
 
 ```
-┌────────────┐     ┌─────────────┐     ┌──────────┐     ┌─────────┐     ┌──────┐
-│ Implement  │────>│ Code Review │────>│ Testing  │────>│  Merge  │────>│ Done │
-│            │     │             │     │          │     │         │     │      │
-│ Write code │     │ Review diff │     │ Run tests│     │ Merge PR│     │Report│
-│ Create PR  │     │ Fix issues  │     │ Fix fails│     │ Close # │     │Clean │
-└────────────┘     └─────────────┘     └──────────┘     └─────────┘     └──────┘
-       │                  │                  │                │
-       │           On failure: retry with backoff            │
-       └─────────────────────────────────────────────────────┘
+Implement  -->  Code Review  -->  Testing  -->  Merge  -->  Done
 ```
 
-| Stage | Agent Role | What It Does |
-|-------|-----------|--------------|
-| **Implement** | Developer | Reads the issue, writes code, commits, and creates a Pull Request |
-| **Code Review** | Reviewer | Checks out the PR branch, reviews for bugs/security/style, fixes issues directly |
-| **Testing** | Test Engineer | Runs the project's test suite, fixes failing tests, pushes fixes |
-| **Merge** | Release Engineer | Merges the PR and closes the issue |
-| **Done** | - | Aggregates logs from all stages, generates a pipeline report, cleans up the workspace |
+| Stage | What the Agent Does |
+|-------|---------------------|
+| **Implement** | Reads the issue, writes code, commits, creates a PR |
+| **Code Review** | Checks out the PR, reviews for bugs/security/style, fixes issues |
+| **Testing** | Runs the project's test suite + E2E validation, fixes failures |
+| **Merge** | Rebases against main, resolves conflicts, merges the PR, closes the issue |
 
-## Architecture
+After merge, Symphony verifies the PR was actually merged (not blocked by conflicts) before marking it as Done.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Tauri v2 App                          │
-│                                                         │
-│  ┌──────────────────────┐  ┌─────────────────────────┐  │
-│  │   React Frontend     │  │     Rust Backend        │  │
-│  │                      │  │                         │  │
-│  │  App.tsx             │  │  lib.rs (entry point)   │  │
-│  │  ├─ RepoSelector     │  │  ├─ orchestrator.rs     │  │
-│  │  ├─ IssueList        │◄─┼─►│  ├─ poll loop       │  │
-│  │  ├─ Dashboard        │  │  │  ├─ state mgmt      │  │
-│  │  │  (Kanban board)   │  │  │  └─ config           │  │
-│  │  ├─ ActiveAgents     │  │  ├─ agent.rs            │  │
-│  │  ├─ LogViewer        │  │  │  ├─ prompt builder   │  │
-│  │  ├─ PipelineReportView│  │  │  ├─ subprocess exec  │  │
-│  │  └─ Settings         │  │  │  └─ auto-chaining    │  │
-│  │                      │  │  ├─ github.rs           │  │
-│  │  Tailwind CSS        │  │  │  └─ gh CLI wrapper   │  │
-│  │                      │  │  ├─ workspace.rs        │  │
-│  │                      │  │  │  └─ clone/cleanup    │  │
-│  │                      │  │  ├─ report.rs           │  │
-│  │                      │  │  ├─ notification.rs     │  │
-│  │                      │  │  ├─ logs.rs             │  │
-│  │                      │  │  ├─ paths.rs            │  │
-│  │                      │  │  └─ dock.rs             │  │
-│  └──────────────────────┘  │                         │  │
-│                            └─────────────────────────┘  │
-│         Tauri IPC (invoke / emit)                       │
-└─────────────────────────────────────────────────────────┘
-         │                              │
-         ▼                              ▼
-   Browser Webview               Agent Subprocesses
-                                 (claude / codex CLI)
-                                       │
-                                       ▼
-                                 ~/symphony-workspaces/
-                                 └─ owner_repo_42/
-```
+## Screenshots
 
-### Backend Modules (Rust)
+### Kanban Dashboard
 
-| File | Purpose |
-|------|---------|
-| `src-tauri/src/lib.rs` | App entry point. Registers all Tauri commands, initializes shared state, runs workspace cleanup on startup |
-| `src-tauri/src/orchestrator.rs` | Core poll loop that fetches open issues, checks for existing PRs, determines available slots, and dispatches agents. Manages `OrchestratorState` with all active runs |
-| `src-tauri/src/agent.rs` | Builds stage-specific prompts, spawns agent subprocesses (Claude CLI or Codex CLI), streams stdout/stderr as log events, handles auto-chaining to next stages and retry logic |
-| `src-tauri/src/github.rs` | Wraps the `gh` CLI for listing repos, issues, PRs, and parsing "Closes #N" references |
-| `src-tauri/src/workspace.rs` | Manages isolated workspaces under `~/symphony-workspaces/`. Clones repos, creates issue branches (`symphony/issue-N`), handles cleanup and TTL-based expiration |
-| `src-tauri/src/dock.rs` | macOS dock badge updates via Cocoa/AppKit bindings |
-| `src-tauri/src/logs.rs` | Log file management under `~/Library/Application Support/SymphonyMac/logs/` |
-| `src-tauri/src/notification.rs` | Native macOS notifications for pipeline events via Tauri notification plugin |
-| `src-tauri/src/paths.rs` | PATH resolution for locating CLI tools (`gh`, `claude`, `codex`) across system and user directories |
-| `src-tauri/src/report.rs` | Pipeline report generation — aggregates stage results, file changes, and durations |
+Issues move across columns as they progress through the pipeline:
 
-### Frontend Components (React + TypeScript)
+![Dashboard](docs/images/dashboard.png)
 
-| Component | Purpose |
-|-----------|---------|
-| `Dashboard.tsx` | Kanban board with columns: Open, In Progress, Code Review, Testing, Merging, Done, Failed |
-| `App.tsx` | Main layout with sidebar navigation between Repositories, Issues, Dashboard, Active Agents, and Settings |
-| `RepoSelector` | Browse and select GitHub repositories |
-| `IssueList` | View issues for the selected repo, launch agents on individual issues |
-| `ActiveAgents` | Monitor running agent subprocesses |
-| `LogViewer` | Real-time streaming logs from agent stdout/stderr |
-| `PipelineReportView` | Visual pipeline report with per-stage results and stats |
-| `Settings` | Configure agent type, concurrency, polling interval, retries, notifications, and workspace TTL |
+### Active Agents
 
-## Workspace Isolation
+Real-time monitoring of running agent subprocesses with streaming logs:
 
-Each issue gets its own workspace directory:
-
-```
-~/symphony-workspaces/
-├── owner_repo_1/    # Shallow clone for issue #1
-├── owner_repo_2/    # Shallow clone for issue #2
-└── owner_repo_17/   # Shallow clone for issue #17
-```
-
-- Repos are shallow-cloned via `gh repo clone`
-- A dedicated branch `symphony/issue-N` is created per issue
-- Workspaces are cleaned up after pipeline completion or configurable TTL expiration
-
-## Configuration
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `agent_type` | `claude` | Agent CLI to use (`claude` or `codex`) |
-| `auto_approve` | `true` | Skip permission prompts in agent CLI |
-| `max_concurrent` | `3` | Maximum parallel agent subprocesses |
-| `poll_interval_secs` | `60` | Seconds between issue polling cycles |
-| `issue_label` | `null` | Only process issues with this label |
-| `max_retries` | `1` | Retry attempts per failed stage |
-| `retry_backoff_secs` | `10` | Delay before retrying a failed stage |
-| `workspace_ttl_days` | `7` | Auto-delete workspaces older than this |
+![Active Agents](docs/images/active-agents.png)
 
 ## Prerequisites
 
-- **macOS** (Tauri v2 desktop app)
-- **GitHub CLI** (`gh`) installed and authenticated
-- **Claude Code CLI** (`claude`) or **Codex CLI** (`codex`) installed
-- **Node.js** and **Rust** toolchain for building from source
+- **macOS** (native desktop app)
+- **GitHub CLI** (`gh`) -- installed and authenticated (`gh auth login`)
+- At least one AI agent CLI:
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) -- recommended
+  - [Codex CLI](https://github.com/openai/codex) (`codex`)
+- **Node.js** and **Rust** toolchain (for building from source)
 
-## Build
+## Install
+
+### From Source
 
 ```bash
+git clone https://github.com/pedrocid/SymphonyMac.git
+cd SymphonyMac
 npm install
 npx tauri build
 ```
 
-The built app is located at `src-tauri/target/release/bundle/macos/Symphony Mac.app`.
+The built app is at `src-tauri/target/release/bundle/macos/Symphony Mac.app`. Copy it to `/Applications/` to install.
+
+### Development
+
+```bash
+npm install
+npx tauri dev
+```
+
+## Usage
+
+1. Open Symphony Mac
+2. Go to **Repositories** and select a GitHub repo
+3. Go to **Dashboard** to see the Kanban board
+4. Click **Auto-pilot** to start the orchestrator -- it will poll for open issues and begin working
+5. Or click **Run** on individual issues to launch them manually
+6. Monitor progress in **Active Agents** with real-time streaming logs
+7. Failed tasks can be retried with the **Retry** button
+
+## Configuration
+
+All settings are available in the **Settings** page:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Agent type | `claude` | Which CLI to use (`claude` or `codex`) |
+| Auto approve | `true` | Skip permission prompts in agent CLI |
+| Max concurrent | `3` | Maximum parallel agent subprocesses |
+| Poll interval | `60s` | Seconds between issue polling cycles |
+| Issue label | none | Only process issues with this label |
+| Max retries | `1` | Retry attempts per failed stage |
+| Retry backoff | `10s` | Delay before retrying a failed stage |
+| Workspace TTL | `7 days` | Auto-delete workspaces older than this |
+
+## How It Works
+
+### Workspace Isolation
+
+Each issue gets its own cloned workspace so agents never interfere with each other:
+
+```
+~/symphony-workspaces/
+  owner_repo_1/    # Clone for issue #1
+  owner_repo_2/    # Clone for issue #2
+  owner_repo_17/   # Clone for issue #17
+```
+
+Repos are shallow-cloned via `gh repo clone`. A dedicated branch `symphony/issue-N` is created per issue. Workspaces are cleaned up after pipeline completion or after the configured TTL expires.
+
+### Streaming Logs
+
+When using Claude Code, Symphony uses `--output-format stream-json --verbose` to get real-time events as the agent works. You'll see tool calls (file reads, edits, bash commands), results, and assistant messages as they happen -- not just at the end.
+
+### Merge Conflict Handling
+
+Since multiple agents may work in parallel and merge PRs concurrently, Symphony handles merge conflicts:
+- The merge agent rebases against main before merging to detect conflicts early
+- After the agent finishes, Symphony verifies the PR state is actually "MERGED" via `gh pr view`
+- If the merge failed silently (e.g. due to conflicts), the task is marked as failed instead of advancing to Done
+
+### GitHub Integration
+
+All GitHub operations use the `gh` CLI -- no API tokens needed beyond what `gh auth` provides. This includes listing repos, fetching issues, creating PRs, merging, and closing issues.
+
+## Architecture
+
+```
+Tauri v2 App
+  Frontend (React + TypeScript + Tailwind CSS)
+    App.tsx ............ Sidebar navigation
+    Dashboard.tsx ...... Kanban board
+    ActiveAgents.tsx ... Real-time agent monitoring
+    LogViewer.tsx ...... Streaming log viewer
+    Settings.tsx ....... Configuration
+
+  Backend (Rust)
+    orchestrator.rs .... Poll loop, state management, dispatch
+    agent.rs ........... Prompt builder, subprocess exec, auto-chaining
+    github.rs .......... gh CLI wrapper (repos, issues, PRs)
+    workspace.rs ....... Clone/cleanup isolated workspaces
+    report.rs .......... Pipeline report generation
+    logs.rs ............ Persistent log storage
+    notification.rs .... macOS notifications
+    dock.rs ............ Dock badge updates
+    paths.rs ........... CLI tool resolution
+```
+
+## License
+
+MIT

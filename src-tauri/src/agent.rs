@@ -322,13 +322,7 @@ fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>)
     match config.agent_type.as_str() {
         "codex" => {
             let mut args = vec!["exec".to_string()];
-            // Symphony's issue pipeline does not use the paper MCP server, and some
-            // local Codex setups point it at a dead localhost endpoint.
-            args.push("-c".to_string());
-            args.push("mcp_servers.paper.enabled=false".to_string());
             if config.auto_approve {
-                // Codex's current --full-auto mode uses a sandbox profile that blocks
-                // networked gh operations needed for this pipeline (PR create/comment/merge).
                 args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
             }
             // Allow Codex sandbox to read gh auth config
