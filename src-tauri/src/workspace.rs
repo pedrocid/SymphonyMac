@@ -96,11 +96,8 @@ pub async fn execute_hook_async(
         .spawn()
         .map_err(|e| format!("Hook '{}' failed to start: {}", hook_name, e))?;
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        child.wait_with_output(),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await;
 
     match result {
         Ok(Ok(output)) => {
@@ -125,7 +122,10 @@ pub async fn execute_hook_async(
         Ok(Err(e)) => Err(format!("Hook '{}' I/O error: {}", hook_name, e)),
         Err(_) => {
             // Timeout elapsed — child is killed on drop via kill_on_drop(true)
-            Err(format!("Hook '{}' timed out after {}s", hook_name, timeout_secs))
+            Err(format!(
+                "Hook '{}' timed out after {}s",
+                hook_name, timeout_secs
+            ))
         }
     }
 }
@@ -216,8 +216,7 @@ pub fn cleanup_workspace(
     if workspace_path.exists() {
         // Run before_remove hook (failure is logged but ignored)
         if let Some(ref cmd) = hooks.before_remove {
-            if let Err(e) =
-                execute_hook("before_remove", cmd, &workspace_path, hooks.timeout_secs)
+            if let Err(e) = execute_hook("before_remove", cmd, &workspace_path, hooks.timeout_secs)
             {
                 eprintln!("before_remove hook failed (ignored): {}", e);
             }
@@ -425,12 +424,7 @@ mod tests {
     #[test]
     fn test_execute_hook_sets_env_vars() {
         let tmp = TempDir::new().unwrap();
-        let result = execute_hook(
-            "my_hook",
-            "echo $SYMPHONY_HOOK",
-            tmp.path(),
-            60,
-        );
+        let result = execute_hook("my_hook", "echo $SYMPHONY_HOOK", tmp.path(), 60);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().trim(), "my_hook");
     }
@@ -438,12 +432,7 @@ mod tests {
     #[test]
     fn test_execute_hook_workspace_env() {
         let tmp = TempDir::new().unwrap();
-        let result = execute_hook(
-            "test",
-            "echo $SYMPHONY_WORKSPACE",
-            tmp.path(),
-            60,
-        );
+        let result = execute_hook("test", "echo $SYMPHONY_WORKSPACE", tmp.path(), 60);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.trim().contains(tmp.path().to_str().unwrap()));

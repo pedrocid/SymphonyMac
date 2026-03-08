@@ -252,15 +252,7 @@ pub fn check_blockers_open(repo: &str, blocker_numbers: &[u64]) -> Vec<u64> {
     let mut open_blockers = Vec::new();
     for &num in blocker_numbers {
         let num_str = num.to_string();
-        match run_gh(&[
-            "issue",
-            "view",
-            &num_str,
-            "-R",
-            repo,
-            "--json",
-            "state",
-        ]) {
+        match run_gh(&["issue", "view", &num_str, "-R", repo, "--json", "state"]) {
             Ok(output) => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&output) {
                     if v["state"].as_str() == Some("OPEN") {
@@ -289,7 +281,7 @@ fn parse_closes_issue(body: &str) -> Option<u64> {
         "resolve #",
     ] {
         if let Some(pos) = body_lower.find(keyword) {
-            let after = &body[pos + keyword.len()..];
+            let after = &body_lower[pos + keyword.len()..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 return Some(n);
@@ -314,7 +306,7 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
         "issue #",
     ] {
         if let Some(pos) = title_lower.find(keyword) {
-            let after = &title[pos + keyword.len()..];
+            let after = &title_lower[pos + keyword.len()..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 return Some(n);
@@ -322,9 +314,9 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
         }
     }
     // Try pattern "#123" anywhere
-    for (i, c) in title.chars().enumerate() {
-        if c == '#' {
-            let after = &title[i + 1..];
+    for (index, ch) in title.char_indices() {
+        if ch == '#' {
+            let after = &title[index + 1..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 if n > 0 {
@@ -340,9 +332,7 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
 /// Returns the state string or an error if the check fails.
 pub fn get_issue_state(repo: &str, issue_number: u64) -> Result<String, String> {
     let num_str = issue_number.to_string();
-    let output = run_gh(&[
-        "issue", "view", &num_str, "-R", repo, "--json", "state",
-    ])?;
+    let output = run_gh(&["issue", "view", &num_str, "-R", repo, "--json", "state"])?;
     let v: serde_json::Value =
         serde_json::from_str(&output).map_err(|e| format!("Failed to parse issue JSON: {}", e))?;
     Ok(v["state"].as_str().unwrap_or("OPEN").to_string())
@@ -352,15 +342,7 @@ pub fn get_issue_state(repo: &str, issue_number: u64) -> Result<String, String> 
 /// Returns Ok(true) if open, Ok(false) if closed/not-open, Err on failure.
 pub fn is_issue_open(repo: &str, issue_number: u64) -> Result<bool, String> {
     let num_str = issue_number.to_string();
-    let output = run_gh(&[
-        "issue",
-        "view",
-        &num_str,
-        "-R",
-        repo,
-        "--json",
-        "state",
-    ])?;
+    let output = run_gh(&["issue", "view", &num_str, "-R", repo, "--json", "state"])?;
 
     let v: serde_json::Value =
         serde_json::from_str(&output).map_err(|e| format!("Failed to parse issue state: {}", e))?;
@@ -526,7 +508,8 @@ mod tests {
 
     #[test]
     fn test_parse_blockers_multiple_patterns() {
-        let text = "Blocked by #1, depends on #2, requires #3, waiting on #4, waiting for #5, after #6";
+        let text =
+            "Blocked by #1, depends on #2, requires #3, waiting on #4, waiting for #5, after #6";
         let blockers = parse_blockers(text);
         assert_eq!(blockers, vec![1, 2, 3, 4, 5, 6]);
     }
@@ -550,5 +533,23 @@ mod tests {
         let text = "Blocked by #0";
         let blockers = parse_blockers(text);
         assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_closes_issue_unicode_prefix() {
+        let body = "Résumé update complete. Closes #42";
+        assert_eq!(parse_closes_issue(body), Some(42));
+    }
+
+    #[test]
+    fn test_parse_issue_from_title_unicode_prefix() {
+        let title = "🚀 Fix #91: Improve pipeline coverage";
+        assert_eq!(parse_issue_from_title(title), Some(91));
+    }
+
+    #[test]
+    fn test_parse_issue_from_title_unicode_before_hash() {
+        let title = "Résumé polish before landing #108";
+        assert_eq!(parse_issue_from_title(title), Some(108));
     }
 }
