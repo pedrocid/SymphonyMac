@@ -204,7 +204,8 @@ impl From<&AgentRun> for RunSummary {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct LifecycleHooks {
     /// Runs after a new workspace is created (e.g., npm install). Failure aborts.
     pub after_create: Option<String>,
@@ -230,7 +231,8 @@ impl Default for LifecycleHooks {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct RunConfig {
     pub agent_type: String,
     pub auto_approve: bool,
@@ -492,24 +494,7 @@ impl OrchestratorState {
     pub fn new() -> Self {
         // Try to load persisted state from disk
         if let Some(persisted) = crate::persistence::load_state() {
-            // Backward compat: migrate old single `repo` to `repos` list
-            let repos = if persisted.repos.is_empty() {
-                persisted.repo.into_iter().collect()
-            } else {
-                persisted.repos
-            };
-            return Self {
-                is_running: false,
-                repos,
-                runs: persisted.runs,
-                config: RunConfig::default(),
-                agent_pids: HashMap::new(),
-                stop_flag: false,
-                total_input_tokens: persisted.total_input_tokens,
-                total_output_tokens: persisted.total_output_tokens,
-                total_cost_usd: persisted.total_cost_usd,
-                total_runtime_secs: persisted.total_runtime_secs,
-            };
+            return Self::from_persisted(persisted);
         }
 
         Self {
@@ -526,9 +511,37 @@ impl OrchestratorState {
         }
     }
 
+    fn from_persisted(persisted: crate::persistence::PersistedState) -> Self {
+        // Backward compat: migrate old single `repo` to `repos` list
+        let repos = if persisted.repos.is_empty() {
+            persisted.repo.into_iter().collect()
+        } else {
+            persisted.repos
+        };
+
+        Self {
+            is_running: false,
+            repos,
+            runs: persisted.runs,
+            config: persisted.config,
+            agent_pids: HashMap::new(),
+            stop_flag: false,
+            total_input_tokens: persisted.total_input_tokens,
+            total_output_tokens: persisted.total_output_tokens,
+            total_cost_usd: persisted.total_cost_usd,
+            total_runtime_secs: persisted.total_runtime_secs,
+        }
+    }
+
+    pub fn try_persist(&self) -> Result<(), String> {
+        crate::persistence::save_state(self)
+    }
+
     /// Persist current state to disk. Call after every state transition.
     pub fn persist(&self) {
-        crate::persistence::save_state(self);
+        if let Err(err) = self.try_persist() {
+            eprintln!("[persistence] Failed to save orchestrator state: {}", err);
+        }
     }
 
     /// Get the latest run for a given repo and issue number
@@ -554,7 +567,12 @@ pub async fn update_config(
     config: RunConfig,
 ) -> Result<(), String> {
     let mut s = state.lock().await;
+    let previous_config = s.config.clone();
     s.config = config;
+    if let Err(err) = s.try_persist() {
+        s.config = previous_config;
+        return Err(format!("Failed to save settings: {}", err));
+    }
     Ok(())
 }
 
@@ -1156,6 +1174,7 @@ mod tests {
     use super::*;
     use crate::github::Issue;
     use std::collections::HashMap;
+    use crate::persistence::PersistedState;
 
     fn make_issue(number: u64, labels: Vec<&str>, created_at: &str) -> Issue {
         Issue {
@@ -1470,5 +1489,26 @@ mod tests {
             next_pipeline_stage(&PipelineStage::CodeReview, &skipped),
             Some(PipelineStage::Merge)
         );
+    }
+
+    #[test]
+    fn test_from_persisted_restores_config_and_migrates_legacy_repo() {
+        let persisted = PersistedState {
+            repo: Some("test/repo".to_string()),
+            config: RunConfig {
+                agent_type: "codex".to_string(),
+                auto_approve: false,
+                max_concurrent: 7,
+                ..RunConfig::default()
+            },
+            ..PersistedState::default()
+        };
+
+        let state = OrchestratorState::from_persisted(persisted);
+
+        assert_eq!(state.repos, vec!["test/repo".to_string()]);
+        assert_eq!(state.config.agent_type, "codex");
+        assert!(!state.config.auto_approve);
+        assert_eq!(state.config.max_concurrent, 7);
     }
 }
