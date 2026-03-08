@@ -336,6 +336,18 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
     None
 }
 
+/// Fetch the current state of an issue (e.g. "OPEN", "CLOSED").
+/// Returns the state string or an error if the check fails.
+pub fn get_issue_state(repo: &str, issue_number: u64) -> Result<String, String> {
+    let num_str = issue_number.to_string();
+    let output = run_gh(&[
+        "issue", "view", &num_str, "-R", repo, "--json", "state",
+    ])?;
+    let v: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("Failed to parse issue JSON: {}", e))?;
+    Ok(v["state"].as_str().unwrap_or("OPEN").to_string())
+}
+
 /// Check if a PR associated with a given issue number is actually merged.
 /// Returns Ok(true) if merged, Ok(false) if still open/closed-not-merged, Err on failure.
 pub fn is_pr_merged_for_issue(repo: &str, issue_number: u64) -> Result<bool, String> {

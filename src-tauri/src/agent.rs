@@ -1171,6 +1171,58 @@ fn spawn_next_stage(
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
 
+        // Re-check issue/PR state before proceeding to the next stage
+        {
+            let repo_clone = repo.clone();
+            let issue_num = issue_number;
+            let stage_clone = stage.clone();
+            let stage_label_clone = stage_label.clone();
+
+            let skip = tokio::task::spawn_blocking(move || {
+                // Check if the issue has been closed externally
+                match crate::github::get_issue_state(&repo_clone, issue_num) {
+                    Ok(ref issue_state) if issue_state != "OPEN" => {
+                        eprintln!(
+                            "Issue #{issue_num} is {issue_state}; skipping stage {stage_label_clone}"
+                        );
+                        return true;
+                    }
+                    Err(ref e) => {
+                        eprintln!(
+                            "Warning: could not re-check issue #{issue_num} state: {e}; proceeding anyway"
+                        );
+                    }
+                    _ => {}
+                }
+
+                // If the next stage is Merge, check if the PR is already merged
+                if matches!(stage_clone, PipelineStage::Merge) {
+                    match crate::github::is_pr_merged_for_issue(&repo_clone, issue_num) {
+                        Ok(true) => {
+                            eprintln!(
+                                "PR for issue #{issue_num} is already merged; skipping Merge stage"
+                            );
+                            return true;
+                        }
+                        Err(ref e) => {
+                            eprintln!(
+                                "Warning: could not check PR merge status for #{issue_num}: {e}; proceeding anyway"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+
+                false
+            })
+            .await
+            .unwrap_or(false);
+
+            if skip {
+                return;
+            }
+        }
+
         let run_id = Uuid::new_v4().to_string();
         let config = {
             let s = state.lock().await;
