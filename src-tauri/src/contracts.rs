@@ -15,7 +15,7 @@ pub fn export_typescript_contracts() -> Result<(), ExportError> {
         .with_large_int("number")
         .with_out_dir(contracts_output_dir());
 
-    crate::orchestrator::OrchestratorStatus::export_all(&cfg)?;
+    crate::orchestrator::OrchestratorOverview::export_all(&cfg)?;
     crate::orchestrator::BlockedIssueListEvent::export_all(&cfg)?;
     crate::github::Issue::export_all(&cfg)?;
     crate::github::Repo::export_all(&cfg)?;
