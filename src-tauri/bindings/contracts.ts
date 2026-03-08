@@ -2,7 +2,7 @@
 
 export type AgentLogLine = { run_id: string, timestamp: string, line: string, };
 
-export type AgentRun = { id: string, repo: string, issue_number: number, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, logs: Array<string>, workspace_path: string, error: string | null, attempt: number, max_retries: number, lines_added: number, lines_removed: number, files_modified_list: Array<string>, report: PipelineReport | null, 
+export type AgentRun = { id: string, repo: string, issue_number: bigint, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, logs: Array<string>, workspace_path: string, error: string | null, attempt: number, max_retries: number, lines_added: number, lines_removed: number, files_modified_list: Array<string>, report: PipelineReport | null, 
 /**
  * The CLI command invoked (e.g. "claude --print ...")
  */
@@ -30,7 +30,7 @@ last_log_timestamp: string | null,
 /**
  * Token usage from Claude result events
  */
-input_tokens: number, output_tokens: number, cost_usd: number, 
+input_tokens: bigint, output_tokens: bigint, cost_usd: number, 
 /**
  * Labels from the GitHub issue, used for stage-skip logic
  */
@@ -50,11 +50,11 @@ pending_next_stage: string | null, };
 
 export type AgentStatus = "preparing" | "running" | "completed" | "failed" | "stopped" | "interrupted" | "awaiting_approval";
 
-export type BlockedIssue = { repo: string, issue_number: number, blocked_by: Array<number>, };
+export type BlockedIssue = { repo: string, issue_number: bigint, blocked_by: Array<bigint>, };
 
 export type BlockedIssueListEvent = { blocked: Array<BlockedIssue>, };
 
-export type Issue = { number: number, title: string, body: string | null, state: string, labels: Array<string>, assignee: string | null, url: string, created_at: string, updated_at: string, };
+export type Issue = { number: bigint, title: string, body: string | null, state: string, labels: Array<string>, assignee: string | null, url: string, created_at: string, updated_at: string, };
 
 export type LifecycleHooks = { 
 /**
@@ -76,17 +76,17 @@ before_remove: string | null,
 /**
  * Timeout in seconds for each hook (default 60).
  */
-timeout_secs: number, };
+timeout_secs: bigint, };
 
-export type OrchestratorOverview = { is_running: boolean, repos: Array<string>, runs: Array<RunSummary>, config: RunConfig, total_completed: number, total_failed: number, active_count: number, total_input_tokens: number, total_output_tokens: number, total_cost_usd: number, total_runtime_secs: number, };
+export type OrchestratorOverview = { is_running: boolean, repos: Array<string>, runs: Array<RunSummary>, config: RunConfig, total_completed: number, total_failed: number, active_count: number, total_input_tokens: bigint, total_output_tokens: bigint, total_cost_usd: number, total_runtime_secs: number, };
 
-export type PipelineReport = { issue_number: number, issue_title: string, repo: string, total_duration_secs: number, total_duration_display: string, stages: Array<StageReport>, pr_number: number | null, pr_url: string | null, issue_url: string, code_review_summary: string, testing_summary: string, total_input_tokens: number, total_output_tokens: number, total_cost_usd: number, };
+export type PipelineReport = { issue_number: bigint, issue_title: string, repo: string, total_duration_secs: bigint, total_duration_display: string, stages: Array<StageReport>, pr_number: bigint | null, pr_url: string | null, issue_url: string, code_review_summary: string, testing_summary: string, total_input_tokens: bigint, total_output_tokens: bigint, total_cost_usd: number, };
 
 export type PipelineStage = "implement" | "code_review" | "testing" | "merge" | "done";
 
 export type Repo = { full_name: string, name: string, owner: string, description: string | null, url: string, default_branch: string, is_private: boolean, };
 
-export type RunConfig = { agent_type: string, auto_approve: boolean, max_concurrent: number, poll_interval_secs: number, issue_label: string | null, max_turns: number, notifications_enabled: boolean, notification_sound: boolean, max_retries: number, retry_backoff_secs: number, retry_base_delay_secs: number, retry_max_backoff_secs: number, cleanup_on_failure: boolean, cleanup_on_stop: boolean, workspace_ttl_days: number, max_concurrent_by_stage: { [key in string]: number }, stage_prompts: { [key in string]: string }, hooks: LifecycleHooks, 
+export type RunConfig = { agent_type: string, auto_approve: boolean, max_concurrent: number, poll_interval_secs: bigint, issue_label: string | null, max_turns: number, notifications_enabled: boolean, notification_sound: boolean, max_retries: number, retry_backoff_secs: bigint, retry_base_delay_secs: bigint, retry_max_backoff_secs: bigint, cleanup_on_failure: boolean, cleanup_on_stop: boolean, workspace_ttl_days: number, max_concurrent_by_stage: { [key in string]: number }, stage_prompts: { [key in string]: string }, hooks: LifecycleHooks, 
 /**
  * Priority label ordering for dispatch sorting.
  * Labels listed first have higher priority (dispatched first).
@@ -99,7 +99,7 @@ priority_labels: Array<string>,
  * this duration, it is killed and marked as failed. Set to 0 to disable.
  * Default: 300 (5 minutes).
  */
-stall_timeout_secs: number, 
+stall_timeout_secs: bigint, 
 /**
  * Label-to-stage skip mappings. When an issue has a label matching a key,
  * the listed stages are skipped during auto-chaining.
@@ -115,7 +115,7 @@ stage_skip_labels: { [key in string]: Array<string> },
  */
 approval_gates: { [key in string]: boolean }, };
 
-export type RunSummary = { id: string, repo: string, issue_number: number, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, workspace_path: string, error: string | null, attempt: number, max_retries: number, command_display: string | null, agent_type: string, last_log_line: string | null, log_count: number, activity: string | null, last_log_timestamp: string | null, skipped_stages: Array<string>, pending_next_stage: string | null, };
+export type RunSummary = { id: string, repo: string, issue_number: bigint, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, workspace_path: string, error: string | null, attempt: number, max_retries: number, command_display: string | null, agent_type: string, last_log_line: string | null, log_count: number, activity: string | null, last_log_timestamp: string | null, skipped_stages: Array<string>, pending_next_stage: string | null, };
 
 /**
  * Structured context generated at the end of each pipeline stage,
@@ -141,7 +141,7 @@ lines_removed: number,
 /**
  * PR number if one was created or exists
  */
-pr_number: number | null, 
+pr_number: bigint | null, 
 /**
  * Branch name for the PR
  */
@@ -151,6 +151,6 @@ branch_name: string | null,
  */
 summary: string, };
 
-export type StageReport = { name: string, status: string, duration_secs: number | null, duration_display: string, files_modified: Array<string>, lines_added: number, lines_removed: number, commands_executed: Array<string>, summary: string, attempt: number, };
+export type StageReport = { name: string, status: string, duration_secs: bigint | null, duration_display: string, files_modified: Array<string>, lines_added: number, lines_removed: number, commands_executed: Array<string>, summary: string, attempt: number, };
 
-export type WorkspaceInfo = { name: string, path: string, size_bytes: number, size_display: string, modified_at: string, age_days: number, };
+export type WorkspaceInfo = { name: string, path: string, size_bytes: bigint, size_display: string, modified_at: string, age_days: number, };

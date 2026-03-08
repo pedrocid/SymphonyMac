@@ -21,6 +21,9 @@ pub fn export_typescript_contracts() -> Result<(), ExportError> {
     crate::github::Repo::export_all(&cfg)?;
     crate::agent::AgentLogLine::export_all(&cfg)?;
     crate::workspace::WorkspaceInfo::export_all(&cfg)?;
+    crate::orchestrator::AgentRun::export_all(&cfg)?;
+    crate::orchestrator::StageContext::export_all(&cfg)?;
+    crate::report::PipelineReport::export_all(&cfg)?;
 
     Ok(())
 }

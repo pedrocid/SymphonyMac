@@ -192,7 +192,8 @@ pub struct AgentRun {
     pub pending_next_stage: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct RunSummary {
     pub id: String,
     pub repo: String,

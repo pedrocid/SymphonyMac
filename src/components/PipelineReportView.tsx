@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { PipelineReport } from "../contracts";
+import type { PipelineReport, StageReport } from "../contracts";
 
 const STAGE_COLORS: Record<string, string> = {
   Implement: "#d29922",
@@ -95,9 +95,9 @@ export function PipelineReportView({
     return n.toString();
   }
 
-  const totalFiles = report.stages.reduce((acc, s) => acc + s.files_modified.length, 0);
-  const totalAdded = report.stages.reduce((acc, s) => acc + s.lines_added, 0);
-  const totalRemoved = report.stages.reduce((acc, s) => acc + s.lines_removed, 0);
+  const totalFiles = report.stages.reduce((acc: number, s: StageReport) => acc + s.files_modified.length, 0);
+  const totalAdded = report.stages.reduce((acc: number, s: StageReport) => acc + s.lines_added, 0);
+  const totalRemoved = report.stages.reduce((acc: number, s: StageReport) => acc + s.lines_removed, 0);
 
   return (
     <div className="flex flex-col h-full">
@@ -186,7 +186,7 @@ export function PipelineReportView({
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
           <h4 className="text-xs font-semibold text-[#8b949e] uppercase tracking-wider mb-3">Time Breakdown</h4>
           <div className="space-y-2">
-            {report.stages.map((stage) => {
+            {report.stages.map((stage: StageReport) => {
               const pct = report.total_duration_secs > 0
                 ? ((stage.duration_secs || 0) / report.total_duration_secs) * 100
                 : 0;
@@ -228,7 +228,7 @@ export function PipelineReportView({
         {/* Stage Details */}
         <div className="space-y-2">
           <h4 className="text-xs font-semibold text-[#8b949e] uppercase tracking-wider">Stage Details</h4>
-          {report.stages.map((stage) => (
+          {report.stages.map((stage: StageReport) => (
             <div key={stage.name} className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
               <button
                 onClick={() => toggleStage(stage.name)}
@@ -276,7 +276,7 @@ export function PipelineReportView({
                     <div>
                       <div className="text-xs text-[#8b949e] mb-1">Files Modified ({stage.files_modified.length})</div>
                       <div className="space-y-0.5">
-                        {stage.files_modified.map((file) => (
+                        {stage.files_modified.map((file: string) => (
                           <div key={file} className="text-xs text-[#e6edf3] font-mono bg-[#0d1117] rounded px-2 py-1">
                             {file}
                           </div>
@@ -290,7 +290,7 @@ export function PipelineReportView({
                     <div>
                       <div className="text-xs text-[#8b949e] mb-1">Commands ({stage.commands_executed.length})</div>
                       <div className="space-y-0.5">
-                        {stage.commands_executed.slice(0, 10).map((cmd, i) => (
+                        {stage.commands_executed.slice(0, 10).map((cmd: string, i: number) => (
                           <div key={i} className="text-xs text-[#8b949e] font-mono bg-[#0d1117] rounded px-2 py-1">
                             $ {cmd}
                           </div>
@@ -316,7 +316,7 @@ export function PipelineReportView({
               All Files Modified ({totalFiles})
             </h4>
             <div className="space-y-0.5 max-h-40 overflow-y-auto">
-              {report.stages.flatMap((s) => s.files_modified).filter((f, i, arr) => arr.indexOf(f) === i).map((file) => (
+              {report.stages.flatMap((s: StageReport) => s.files_modified).filter((f: string, i: number, arr: string[]) => arr.indexOf(f) === i).map((file: string) => (
                 <div key={file} className="text-xs text-[#e6edf3] font-mono">
                   {file}
                 </div>

@@ -26,7 +26,7 @@ pub async fn reconcile_active_runs(app: &AppHandle, state: &SharedState) {
         return;
     }
 
-    let closed_issues = resolve_closed_issues(&active_runs);
+    let closed_issues = resolve_closed_issues(&active_runs).await;
     for action in closed_issues {
         let _ = app.emit(
             "orchestrator-reconcile",

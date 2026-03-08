@@ -426,6 +426,7 @@ mod tests {
             total_output_tokens: 0,
             total_cost_usd: 0.0,
             total_runtime_secs: 0.0,
+            config: RunConfig::default(),
         };
 
         let mut json = serde_json::to_value(&persisted).unwrap();
