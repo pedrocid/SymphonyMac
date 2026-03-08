@@ -389,3 +389,168 @@ pub async fn cleanup_all_workspaces() -> Result<u32, String> {
 
     Ok(removed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_execute_hook_success() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook("test_hook", "echo hello", tmp.path(), 60);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().trim(), "hello");
+    }
+
+    #[test]
+    fn test_execute_hook_empty_command() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook("test_hook", "   ", tmp.path(), 60);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_execute_hook_failure() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook("test_hook", "exit 1", tmp.path(), 60);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("test_hook"));
+        assert!(err.contains("exited with code 1"));
+    }
+
+    #[test]
+    fn test_execute_hook_sets_env_vars() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook(
+            "my_hook",
+            "echo $SYMPHONY_HOOK",
+            tmp.path(),
+            60,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().trim(), "my_hook");
+    }
+
+    #[test]
+    fn test_execute_hook_workspace_env() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook(
+            "test",
+            "echo $SYMPHONY_WORKSPACE",
+            tmp.path(),
+            60,
+        );
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.trim().contains(tmp.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_execute_hook_runs_in_workspace_dir() {
+        let tmp = TempDir::new().unwrap();
+        // Create a marker file
+        fs::write(tmp.path().join("marker.txt"), "found").unwrap();
+        let result = execute_hook("test", "cat marker.txt", tmp.path(), 60);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().trim(), "found");
+    }
+
+    #[test]
+    fn test_execute_hook_stderr_in_error() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook("test", "echo 'oops' >&2; exit 2", tmp.path(), 60);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("oops"));
+        assert!(err.contains("exited with code 2"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_hook_async_success() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook_async("test", "echo async_hello", tmp.path(), 60).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().trim(), "async_hello");
+    }
+
+    #[tokio::test]
+    async fn test_execute_hook_async_timeout() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook_async("test", "sleep 10", tmp.path(), 1).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("timed out"));
+        assert!(err.contains("1s"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_hook_async_failure() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook_async("test", "exit 42", tmp.path(), 60).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exited with code 42"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_hook_async_empty_command() {
+        let tmp = TempDir::new().unwrap();
+        let result = execute_hook_async("test", "", tmp.path(), 60).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_lifecycle_hooks_default() {
+        let hooks = crate::orchestrator::LifecycleHooks::default();
+        assert!(hooks.after_create.is_none());
+        assert!(hooks.before_run.is_none());
+        assert!(hooks.after_run.is_none());
+        assert!(hooks.before_remove.is_none());
+        assert_eq!(hooks.timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_cleanup_workspace_with_before_remove_hook() {
+        let root = workspace_root();
+        let _ = fs::create_dir_all(&root);
+        let test_dir = root.join("test_hook_repo_999");
+        let _ = fs::create_dir_all(&test_dir);
+        // Create a marker file that the hook will create
+        let marker = root.join("hook_ran_marker.txt");
+        let _ = fs::remove_file(&marker);
+
+        let hooks = crate::orchestrator::LifecycleHooks {
+            before_remove: Some(format!("echo ran > {}", marker.to_string_lossy())),
+            ..Default::default()
+        };
+
+        let result = cleanup_workspace("test_hook/repo", 999, &hooks);
+        assert!(result.is_ok());
+        assert!(!test_dir.exists(), "workspace should be deleted");
+        assert!(marker.exists(), "before_remove hook should have run");
+        // Clean up marker
+        let _ = fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn test_cleanup_workspace_before_remove_failure_ignored() {
+        let root = workspace_root();
+        let _ = fs::create_dir_all(&root);
+        let test_dir = root.join("test_hook_repo_998");
+        let _ = fs::create_dir_all(&test_dir);
+
+        let hooks = crate::orchestrator::LifecycleHooks {
+            before_remove: Some("exit 1".to_string()),
+            ..Default::default()
+        };
+
+        // Should succeed even if hook fails
+        let result = cleanup_workspace("test_hook/repo", 998, &hooks);
+        assert!(result.is_ok());
+        assert!(!test_dir.exists(), "workspace should still be deleted");
+    }
+}
