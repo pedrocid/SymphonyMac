@@ -104,6 +104,10 @@ export async function rejectStage(runId: string): Promise<void> {
   await command<void>("reject_stage", { runId });
 }
 
+export async function advanceToStage(runId: string, targetStage: string): Promise<void> {
+  await command<void>("advance_to_stage", { runId, targetStage });
+}
+
 export async function updateConfig(config: RunConfig): Promise<void> {
   await command<void>("update_config", { config });
 }

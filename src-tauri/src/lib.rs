@@ -57,6 +57,7 @@ pub fn run() {
             agent::retry_agent_from_stage,
             agent::approve_stage,
             agent::reject_stage,
+            agent::advance_to_stage,
             agent::get_default_prompts,
             orchestrator::get_pipeline_report,
             orchestrator::search_agent_logs,

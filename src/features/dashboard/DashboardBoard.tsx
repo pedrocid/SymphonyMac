@@ -7,6 +7,22 @@ const STAGE_LABELS: Record<string, string> = {
   merge: "Merging",
 };
 
+const STAGE_ORDER = ["implement", "code_review", "testing", "merge"];
+
+const STAGE_DISPLAY: Record<string, string> = {
+  implement: "Implement",
+  code_review: "Review",
+  testing: "Testing",
+  merge: "Merge",
+};
+
+function getAdvanceableStages(currentStage: string | undefined): string[] {
+  if (!currentStage) return STAGE_ORDER;
+  const idx = STAGE_ORDER.indexOf(currentStage);
+  if (idx < 0) return [];
+  return STAGE_ORDER.slice(idx + 1);
+}
+
 interface DashboardBoardProps {
   columns: DashboardColumn[];
   showRepoName: boolean;
@@ -18,6 +34,7 @@ interface DashboardBoardProps {
   onRetryAgentFromStage: (runId: string, fromStage: string) => void;
   onApproveStage: (runId: string) => void;
   onRejectStage: (runId: string) => void;
+  onAdvanceToStage: (runId: string, targetStage: string) => void;
 }
 
 export function DashboardBoard({
@@ -31,6 +48,7 @@ export function DashboardBoard({
   onRetryAgentFromStage,
   onApproveStage,
   onRejectStage,
+  onAdvanceToStage,
 }: DashboardBoardProps) {
   return (
     <div className="flex-1 overflow-x-auto overflow-y-hidden p-6">
@@ -61,6 +79,7 @@ export function DashboardBoard({
                   onRetryAgentFromStage={onRetryAgentFromStage}
                   onApproveStage={onApproveStage}
                   onRejectStage={onRejectStage}
+                  onAdvanceToStage={onAdvanceToStage}
                 />
               ))}
 
@@ -95,6 +114,7 @@ function DashboardCard({
   onRetryAgentFromStage,
   onApproveStage,
   onRejectStage,
+  onAdvanceToStage,
 }: DashboardCardProps) {
   return (
     <div
@@ -173,6 +193,33 @@ function DashboardCard({
           </div>
         </div>
       )}
+
+      {card.runStatus === "completed" && card.runId && card.runStage && card.runStage !== "done" && (() => {
+        const stages = getAdvanceableStages(card.runStage);
+        if (stages.length === 0) return null;
+        return (
+          <div className="mb-2">
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="w-1.5 h-1.5 bg-[#58a6ff] rounded-full" />
+              <span className="text-xs text-[#58a6ff]">Advance to next stage</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {stages.map((stage) => (
+                <button
+                  key={stage}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onAdvanceToStage(card.runId!, stage);
+                  }}
+                  className="px-2 py-0.5 text-xs font-medium bg-[#58a6ff15] text-[#58a6ff] border border-[#58a6ff] rounded-md hover:bg-[#58a6ff30] transition-colors"
+                >
+                  {STAGE_DISPLAY[stage] || stage}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {card.blockedBy && card.blockedBy.length > 0 && (
         <div className="flex items-center gap-1.5 mb-2">

@@ -2,6 +2,7 @@ import { startTransition, useState } from "react";
 import { useStatusPolling } from "../../hooks/useStatusPolling";
 import { useTauriSubscription } from "../../hooks/useTauriSubscription";
 import {
+  advanceToStage,
   approveStage,
   getStatus,
   listIssuesForRepos,
@@ -84,6 +85,8 @@ export function useDashboardController() {
       runAndRefresh(() => retryAgentFromStage(runId, fromStage)),
     approveStage: (runId: string) => runAndRefresh(() => approveStage(runId)),
     rejectStage: (runId: string) => runAndRefresh(() => rejectStage(runId)),
+    advanceToStage: (runId: string, targetStage: string) =>
+      runAndRefresh(() => advanceToStage(runId, targetStage)),
     launchIssueByKey: (issueKey: string) => {
       const issue = issuesByKey.get(issueKey);
       if (!issue) {

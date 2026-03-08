@@ -434,6 +434,101 @@ pub async fn stop_agent(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn advance_to_stage(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+    target_stage: String,
+) -> Result<String, String> {
+    let target = parse_stage(&target_stage, false)?;
+
+    let (repo, issue_number, issue_title, workspace_path, issue_labels, previous_context) = {
+        let s = state.lock().await;
+        let run = s.runs.get(&run_id).ok_or("Run not found")?;
+        match run.status {
+            AgentStatus::Completed
+            | AgentStatus::AwaitingApproval
+            | AgentStatus::Failed
+            | AgentStatus::Stopped
+            | AgentStatus::Interrupted => {}
+            _ => {
+                return Err(format!(
+                    "Cannot advance run {} with status {:?}",
+                    run_id, run.status
+                ));
+            }
+        }
+        if run.stage == PipelineStage::Done {
+            return Err("Cannot advance a completed pipeline".to_string());
+        }
+        (
+            run.repo.clone(),
+            run.issue_number,
+            run.issue_title.clone(),
+            run.workspace_path.clone(),
+            run.issue_labels.clone(),
+            run.stage_context.clone(),
+        )
+    };
+
+    // Mark current run as completed before advancing
+    let _ = runtime::transition_run(
+        &app,
+        state.inner(),
+        &run_id,
+        StatusTransition {
+            status: AgentStatus::Completed,
+            stage_label: "advanced".to_string(),
+            error: None,
+            finished: true,
+            log_message: Some(format!(
+                "[manual] Advanced to {} by user",
+                target_stage
+            )),
+            pending_next_stage: PendingNextStageUpdate::Clear,
+            emit_extra: Map::new(),
+            persist_meta: true,
+        },
+    )
+    .await;
+
+    let workspace_exists = workspace::workspace_exists(&repo, issue_number);
+    let effective_stage = if workspace_exists {
+        target
+    } else {
+        runtime::append_run_log(
+            state.inner(),
+            &run_id,
+            format!(
+                "[manual] Workspace missing, falling back to implement (requested: {})",
+                target_stage
+            ),
+            true,
+            false,
+        )
+        .await;
+        PipelineStage::Implement
+    };
+
+    let body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => issue.body.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
+    launch_agent(
+        app,
+        state.inner().clone(),
+        repo,
+        issue_number,
+        issue_title,
+        body,
+        effective_stage,
+        issue_labels,
+    )
+    .await
+}
+
 fn parse_stage(stage_name: &str, allow_done: bool) -> Result<PipelineStage, String> {
     match stage_name {
         "implement" => Ok(PipelineStage::Implement),

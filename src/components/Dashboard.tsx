@@ -26,6 +26,7 @@ export function Dashboard({ onViewLogs, onViewReport }: DashboardProps) {
       onRetryAgentFromStage={controller.retryAgentFromStage}
       onApproveStage={controller.approveStage}
       onRejectStage={controller.rejectStage}
+      onAdvanceToStage={controller.advanceToStage}
       onLaunchIssueByKey={controller.launchIssueByKey}
     />
   );
