@@ -13,6 +13,7 @@ pub struct WorkspaceInfo {
     pub size_display: String,
     pub modified_at: String,
     pub age_days: f64,
+    pub is_worktree: bool,
 }
 
 /// Execute a lifecycle hook shell command in the given workspace directory.
@@ -140,6 +141,7 @@ pub fn workspace_root() -> PathBuf {
 pub fn ensure_workspace(
     repo: &str,
     issue_number: u64,
+    local_repo_path: Option<&str>,
     hooks: &crate::orchestrator::LifecycleHooks,
 ) -> Result<PathBuf, String> {
     let root = workspace_root();
@@ -151,7 +153,103 @@ pub fn ensure_workspace(
         return Ok(workspace_path);
     }
 
-    std::fs::create_dir_all(&workspace_path)
+    if let Some(local_path) = local_repo_path {
+        // Use git worktree from the local repository
+        ensure_workspace_worktree(repo, issue_number, local_path, &workspace_path, hooks)
+    } else {
+        // Clone from GitHub
+        ensure_workspace_clone(repo, &workspace_path, issue_number, hooks)
+    }
+}
+
+fn ensure_workspace_worktree(
+    repo: &str,
+    issue_number: u64,
+    local_path: &str,
+    workspace_path: &PathBuf,
+    hooks: &crate::orchestrator::LifecycleHooks,
+) -> Result<PathBuf, String> {
+    let local_repo = std::path::Path::new(local_path);
+    if !local_repo.exists() {
+        return Err(format!(
+            "Local repository path does not exist: {}",
+            local_path
+        ));
+    }
+    if !local_repo.join(".git").exists() {
+        return Err(format!(
+            "Path is not a git repository: {}",
+            local_path
+        ));
+    }
+
+    // Ensure workspace root exists
+    std::fs::create_dir_all(workspace_path.parent().unwrap_or(workspace_path))
+        .map_err(|e| format!("Failed to create workspace root: {}", e))?;
+
+    let branch_name = format!("symphony/issue-{}", issue_number);
+
+    // Create worktree with a new branch
+    let output = Command::new(crate::paths::resolve("git"))
+        .env("PATH", crate::paths::build_path_env())
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            &branch_name,
+            workspace_path.to_str().unwrap(),
+        ])
+        .current_dir(local_path)
+        .output()
+        .map_err(|e| format!("Failed to create worktree: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Branch may already exist — try without -b
+        let output2 = Command::new(crate::paths::resolve("git"))
+            .env("PATH", crate::paths::build_path_env())
+            .args([
+                "worktree",
+                "add",
+                workspace_path.to_str().unwrap(),
+                &branch_name,
+            ])
+            .current_dir(local_path)
+            .output()
+            .map_err(|e| format!("Failed to create worktree: {}", e))?;
+
+        if !output2.status.success() {
+            let stderr2 = String::from_utf8_lossy(&output2.stderr);
+            return Err(format!(
+                "Failed to create worktree for {}: {}\nRetry: {}",
+                repo, stderr, stderr2
+            ));
+        }
+    }
+
+    // Write a marker so cleanup knows this is a worktree
+    let marker_path = workspace_path.join(".symphony-worktree");
+    let _ = std::fs::write(&marker_path, local_path);
+
+    // Run after_create hook (failure aborts workspace creation)
+    if let Some(ref cmd) = hooks.after_create {
+        if let Err(e) = execute_hook("after_create", cmd, workspace_path, hooks.timeout_secs) {
+            cleanup_worktree(workspace_path, local_path);
+            return Err(format!("after_create hook failed: {}", e));
+        }
+    }
+
+    Ok(workspace_path.clone())
+}
+
+fn ensure_workspace_clone(
+    repo: &str,
+    workspace_path: &PathBuf,
+    issue_number: u64,
+    hooks: &crate::orchestrator::LifecycleHooks,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(workspace_path)
         .map_err(|e| format!("Failed to create workspace dir: {}", e))?;
 
     // Clone the repo into the workspace
@@ -180,7 +278,7 @@ pub fn ensure_workspace(
         if !output2.status.success() {
             let stderr = String::from_utf8_lossy(&output2.stderr);
             // Clean up failed workspace
-            let _ = std::fs::remove_dir_all(&workspace_path);
+            let _ = std::fs::remove_dir_all(workspace_path);
             return Err(format!("Failed to clone {}: {}", repo, stderr));
         }
     }
@@ -190,19 +288,19 @@ pub fn ensure_workspace(
     let _ = Command::new(crate::paths::resolve("git"))
         .env("PATH", crate::paths::build_path_env())
         .args(["checkout", "-b", &branch_name])
-        .current_dir(&workspace_path)
+        .current_dir(workspace_path)
         .output();
 
     // Run after_create hook (failure aborts workspace creation)
     if let Some(ref cmd) = hooks.after_create {
-        if let Err(e) = execute_hook("after_create", cmd, &workspace_path, hooks.timeout_secs) {
+        if let Err(e) = execute_hook("after_create", cmd, workspace_path, hooks.timeout_secs) {
             // Clean up the workspace on hook failure
-            let _ = std::fs::remove_dir_all(&workspace_path);
+            let _ = std::fs::remove_dir_all(workspace_path);
             return Err(format!("after_create hook failed: {}", e));
         }
     }
 
-    Ok(workspace_path)
+    Ok(workspace_path.clone())
 }
 
 pub fn cleanup_workspace(
@@ -224,11 +322,57 @@ pub fn cleanup_workspace(
             }
         }
 
-        std::fs::remove_dir_all(&workspace_path)
-            .map_err(|e| format!("Failed to remove workspace: {}", e))?;
+        cleanup_workspace_path(&workspace_path)?;
     }
 
     Ok(())
+}
+
+/// Remove a workspace, detecting if it is a worktree or a plain clone.
+fn cleanup_workspace_path(workspace_path: &std::path::Path) -> Result<(), String> {
+    let marker = workspace_path.join(".symphony-worktree");
+    if marker.exists() {
+        // Read the parent repo path from the marker
+        let local_path = std::fs::read_to_string(&marker).unwrap_or_default();
+        cleanup_worktree(workspace_path, local_path.trim());
+        Ok(())
+    } else {
+        std::fs::remove_dir_all(workspace_path)
+            .map_err(|e| format!("Failed to remove workspace: {}", e))
+    }
+}
+
+/// Remove a git worktree and prune stale entries.
+fn cleanup_worktree(workspace_path: &std::path::Path, local_repo_path: &str) {
+    // Try `git worktree remove` from the parent repo
+    let _ = Command::new(crate::paths::resolve("git"))
+        .env("PATH", crate::paths::build_path_env())
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            &workspace_path.to_string_lossy(),
+        ])
+        .current_dir(if local_repo_path.is_empty() {
+            "/"
+        } else {
+            local_repo_path
+        })
+        .output();
+
+    // If the directory still exists (worktree remove failed), fall back to rm
+    if workspace_path.exists() {
+        let _ = std::fs::remove_dir_all(workspace_path);
+    }
+
+    // Prune stale worktree references
+    if !local_repo_path.is_empty() {
+        let _ = Command::new(crate::paths::resolve("git"))
+            .env("PATH", crate::paths::build_path_env())
+            .args(["worktree", "prune"])
+            .current_dir(local_repo_path)
+            .output();
+    }
 }
 
 pub fn workspace_exists(repo: &str, issue_number: u64) -> bool {
@@ -315,6 +459,7 @@ pub async fn list_workspaces() -> Result<Vec<WorkspaceInfo>, String> {
             .unwrap_or(0.0);
 
         let size_bytes = dir_size(&path);
+        let is_worktree = path.join(".symphony-worktree").exists();
 
         workspaces.push(WorkspaceInfo {
             name,
@@ -323,6 +468,7 @@ pub async fn list_workspaces() -> Result<Vec<WorkspaceInfo>, String> {
             size_display: format_size(size_bytes),
             modified_at,
             age_days,
+            is_worktree,
         });
     }
 
@@ -344,7 +490,7 @@ pub async fn cleanup_old_workspaces(max_age_days: f64) -> Result<u32, String> {
         if ws.age_days >= max_age_days {
             let path = std::path::Path::new(&ws.path);
             if path.exists() {
-                std::fs::remove_dir_all(path)
+                cleanup_workspace_path(path)
                     .map_err(|e| format!("Failed to remove {}: {}", ws.name, e))?;
                 removed += 1;
             }
@@ -368,8 +514,7 @@ pub async fn cleanup_single_workspace(path: String) -> Result<(), String> {
         return Err("Path is outside the workspace directory".to_string());
     }
     if canonical_path.exists() {
-        std::fs::remove_dir_all(&canonical_path)
-            .map_err(|e| format!("Failed to remove workspace: {}", e))?;
+        cleanup_workspace_path(&canonical_path)?;
     }
     Ok(())
 }
@@ -382,13 +527,80 @@ pub async fn cleanup_all_workspaces() -> Result<u32, String> {
     for ws in &workspaces {
         let path = std::path::Path::new(&ws.path);
         if path.exists() {
-            std::fs::remove_dir_all(path)
+            cleanup_workspace_path(path)
                 .map_err(|e| format!("Failed to remove {}: {}", ws.name, e))?;
             removed += 1;
         }
     }
 
     Ok(removed)
+}
+
+/// Validate that a path is a valid git repository and extract its remote info.
+/// Returns the GitHub full_name (e.g. "owner/repo") if detectable, or the dir name.
+#[tauri::command]
+pub async fn validate_local_repo(path: String) -> Result<LocalRepoInfo, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err("Path does not exist".to_string());
+    }
+    if !p.join(".git").exists() && !p.join(".git").is_file() {
+        return Err("Not a git repository (no .git found)".to_string());
+    }
+
+    // Try to detect GitHub remote
+    let output = Command::new(crate::paths::resolve("git"))
+        .env("PATH", crate::paths::build_path_env())
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    let mut full_name = None;
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        full_name = extract_github_full_name(&url);
+    }
+
+    let name = full_name.unwrap_or_else(|| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    });
+
+    Ok(LocalRepoInfo {
+        path: path.clone(),
+        full_name: name,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
+pub struct LocalRepoInfo {
+    pub path: String,
+    pub full_name: String,
+}
+
+/// Extract "owner/repo" from a GitHub URL (HTTPS or SSH).
+fn extract_github_full_name(url: &str) -> Option<String> {
+    // Handle SSH: git@github.com:owner/repo.git
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let name = rest.trim_end_matches(".git").trim_end_matches('/');
+        if name.contains('/') {
+            return Some(name.to_string());
+        }
+    }
+    // Handle HTTPS: https://github.com/owner/repo.git
+    if url.contains("github.com/") {
+        if let Some(rest) = url.split("github.com/").nth(1) {
+            let name = rest.trim_end_matches(".git").trim_end_matches('/');
+            if name.contains('/') {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -543,5 +755,37 @@ mod tests {
         let result = cleanup_workspace("test_hook/repo", 998, &hooks);
         assert!(result.is_ok());
         assert!(!test_dir.exists(), "workspace should still be deleted");
+    }
+
+    #[test]
+    fn test_extract_github_full_name_https() {
+        assert_eq!(
+            extract_github_full_name("https://github.com/owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_github_full_name("https://github.com/owner/repo"),
+            Some("owner/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_github_full_name_ssh() {
+        assert_eq!(
+            extract_github_full_name("git@github.com:owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            extract_github_full_name("git@github.com:owner/repo"),
+            Some("owner/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_github_full_name_non_github() {
+        assert_eq!(
+            extract_github_full_name("https://gitlab.com/owner/repo.git"),
+            None
+        );
     }
 }

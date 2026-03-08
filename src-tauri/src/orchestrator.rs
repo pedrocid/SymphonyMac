@@ -324,6 +324,11 @@ pub struct RunConfig {
     /// testing, merge). Default: all false (fully automatic).
     #[serde(default)]
     pub approval_gates: HashMap<String, bool>,
+    /// Local repository paths. Keys are repo full names (e.g. "owner/repo"),
+    /// values are absolute paths to local git repositories. When a repo has a
+    /// local path configured, Symphony uses `git worktree add` instead of cloning.
+    #[serde(default)]
+    pub local_repos: HashMap<String, String>,
 }
 
 fn default_priority_labels() -> Vec<String> {
@@ -386,6 +391,7 @@ impl Default for RunConfig {
             stall_timeout_secs: default_stall_timeout(),
             stage_skip_labels: default_stage_skip_labels(),
             approval_gates: HashMap::new(),
+            local_repos: HashMap::new(),
         }
     }
 }

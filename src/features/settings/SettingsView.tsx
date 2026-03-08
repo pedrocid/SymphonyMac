@@ -4,6 +4,7 @@ import {
   AgentConfigurationSection,
   ApprovalGatesSection,
   LifecycleHooksSection,
+  LocalReposSection,
   NotificationsSection,
   OrchestratorSection,
   PriorityLabelsSection,
@@ -61,6 +62,7 @@ export function SettingsView({
         <h2 className="text-2xl font-bold text-[#e6edf3] mb-6">Settings</h2>
 
         <div className="space-y-6">
+          <LocalReposSection config={config} setConfig={setConfig} />
           <AgentConfigurationSection config={config} setConfig={setConfig} />
           <OrchestratorSection config={config} setConfig={setConfig} />
           <PriorityLabelsSection config={config} setConfig={setConfig} />

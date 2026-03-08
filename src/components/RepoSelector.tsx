@@ -1,6 +1,15 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Repo } from "../contracts";
+import { getConfig } from "../lib/api";
+
+interface RepoEntry {
+  full_name: string;
+  description?: string | null;
+  is_private?: boolean;
+  is_local: boolean;
+  local_path?: string;
+}
 
 export function RepoSelector({
   selectedRepos,
@@ -11,7 +20,7 @@ export function RepoSelector({
   onToggleRepo: (repo: string) => void;
   onConfirm: () => void;
 }) {
-  const [repos, setRepos] = useState<Repo[]>([]);
+  const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,8 +33,40 @@ export function RepoSelector({
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<Repo[]>("list_repos", { filter: null });
-      setRepos(result);
+      const [ghRepos, config] = await Promise.all([
+        invoke<Repo[]>("list_repos", { filter: null }),
+        getConfig(),
+      ]);
+
+      const localRepos = config.local_repos || {};
+      const localFullNames = new Set(Object.keys(localRepos));
+
+      // Build merged list: local repos first, then GitHub repos (deduped)
+      const entries: RepoEntry[] = [];
+
+      for (const [fullName, path] of Object.entries(localRepos)) {
+        const ghMatch = ghRepos.find((r) => r.full_name === fullName);
+        entries.push({
+          full_name: fullName,
+          description: ghMatch?.description ?? path,
+          is_private: ghMatch?.is_private,
+          is_local: true,
+          local_path: path,
+        });
+      }
+
+      for (const repo of ghRepos) {
+        if (!localFullNames.has(repo.full_name)) {
+          entries.push({
+            full_name: repo.full_name,
+            description: repo.description,
+            is_private: repo.is_private,
+            is_local: false,
+          });
+        }
+      }
+
+      setRepos(entries);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -105,7 +146,12 @@ export function RepoSelector({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-[#58a6ff] font-medium">{repo.full_name}</span>
-                        {repo.is_private && (
+                        {repo.is_local && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-[#3fb95015] border border-[#3fb950] text-[#3fb950]">
+                            Local (worktree)
+                          </span>
+                        )}
+                        {repo.is_private && !repo.is_local && (
                           <span className="text-xs px-2 py-0.5 rounded-full border border-[#30363d] text-[#8b949e]">
                             Private
                           </span>
@@ -113,7 +159,7 @@ export function RepoSelector({
                       </div>
                       {repo.description && (
                         <p className="text-sm text-[#8b949e] mt-1 truncate">
-                          {repo.description}
+                          {repo.is_local ? repo.local_path : repo.description}
                         </p>
                       )}
                     </div>

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AgentLogLine,
+  LocalRepoInfo,
   OrchestratorBlockedPayload,
   OrchestratorStatus,
   RepoIssue,
@@ -150,4 +151,8 @@ export function subscribeToAgentLog(
   return listen<AgentLogLine>("agent-log", (event) => {
     callback(event.payload);
   });
+}
+
+export function validateLocalRepo(path: string): Promise<LocalRepoInfo> {
+  return command<LocalRepoInfo>("validate_local_repo", { path });
 }
