@@ -28,6 +28,9 @@ pub struct PipelineReport {
     pub issue_url: String,
     pub code_review_summary: String,
     pub testing_summary: String,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cost_usd: f64,
 }
 
 pub fn generate_report(
@@ -42,6 +45,9 @@ pub fn generate_report(
     let mut pr_url: Option<String> = None;
     let mut code_review_summary = String::new();
     let mut testing_summary = String::new();
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
+    let mut total_cost_usd: f64 = 0.0;
 
     let stage_order = ["implement", "code_review", "testing", "merge"];
 
@@ -87,6 +93,10 @@ pub fn generate_report(
                 testing_summary = summary.clone();
             }
 
+            total_input_tokens += run.input_tokens;
+            total_output_tokens += run.output_tokens;
+            total_cost_usd += run.cost_usd;
+
             stages.push(StageReport {
                 name: format_stage_name(stage_name),
                 status: run.status.clone().into(),
@@ -116,6 +126,9 @@ pub fn generate_report(
         issue_url,
         code_review_summary,
         testing_summary,
+        total_input_tokens,
+        total_output_tokens,
+        total_cost_usd,
     }
 }
 

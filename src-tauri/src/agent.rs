@@ -360,6 +360,33 @@ fn parse_stream_json_event(raw: &str) -> Vec<String> {
     }
 }
 
+/// Token usage extracted from a Claude CLI result event.
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+    pub duration_secs: f64,
+}
+
+/// Try to extract token usage from a stream-json result event line.
+fn parse_token_usage(raw: &str) -> Option<TokenUsage> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if parsed["type"].as_str() != Some("result") {
+        return None;
+    }
+    let usage = &parsed["usage"];
+    let input_tokens = usage["input_tokens"].as_u64().unwrap_or(0);
+    let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0);
+    let cost_usd = parsed["total_cost_usd"].as_f64().unwrap_or(0.0);
+    let duration_ms = parsed["duration_ms"].as_u64().unwrap_or(0);
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        cost_usd,
+        duration_secs: duration_ms as f64 / 1000.0,
+    })
+}
+
 /// Truncate a JSON value to a max character length for display.
 fn truncate_json(value: &serde_json::Value, max_len: usize) -> String {
     let s = value.to_string();
@@ -454,6 +481,9 @@ pub async fn launch_agent(
         last_log_line: None,
         log_count: 0,
         activity: None,
+        input_tokens: 0,
+        output_tokens: 0,
+        cost_usd: 0.0,
     };
 
     {
@@ -680,6 +710,9 @@ async fn run_agent_process(
                 // Try to parse as stream-json event from Claude CLI
                 let display_lines = parse_stream_json_event(&line);
 
+                // Extract token usage from result events
+                let token_usage = parse_token_usage(&line);
+
                 for display_line in &display_lines {
                     let ts = Utc::now().to_rfc3339();
                     let log_line = AgentLogLine {
@@ -699,6 +732,20 @@ async fn run_agent_process(
                             run.activity = Some(act.clone());
                         }
                     }
+                }
+
+                // Accumulate token usage into run and global totals
+                if let Some(ref usage) = token_usage {
+                    let mut s = state_out.lock().await;
+                    if let Some(run) = s.runs.get_mut(&run_id_out) {
+                        run.input_tokens += usage.input_tokens;
+                        run.output_tokens += usage.output_tokens;
+                        run.cost_usd += usage.cost_usd;
+                    }
+                    s.total_input_tokens += usage.input_tokens;
+                    s.total_output_tokens += usage.output_tokens;
+                    s.total_cost_usd += usage.cost_usd;
+                    s.total_runtime_secs += usage.duration_secs;
                 }
             }
         }
@@ -980,6 +1027,22 @@ async fn run_agent_process(
                     (all_logs, report)
                 };
 
+                // Aggregate token usage across all stage runs for this issue
+                let (total_input, total_output, total_cost) = {
+                    let s = state.lock().await;
+                    let mut inp: u64 = 0;
+                    let mut out: u64 = 0;
+                    let mut cost: f64 = 0.0;
+                    for r in s.runs.values() {
+                        if r.issue_number == issue_number && r.stage != PipelineStage::Done {
+                            inp += r.input_tokens;
+                            out += r.output_tokens;
+                            cost += r.cost_usd;
+                        }
+                    }
+                    (inp, out, cost)
+                };
+
                 let done_run = AgentRun {
                     id: done_id.clone(),
                     repo: repo.clone(),
@@ -1003,6 +1066,9 @@ async fn run_agent_process(
                     last_log_line: None,
                     log_count: 0,
                     activity: Some("Completed".to_string()),
+                    input_tokens: total_input,
+                    output_tokens: total_output,
+                    cost_usd: total_cost,
                 };
                 {
                     let mut s = state.lock().await;
@@ -1125,6 +1191,9 @@ fn spawn_next_stage(
             last_log_line: None,
             log_count: 0,
             activity: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
         };
 
         {
@@ -1256,6 +1325,9 @@ fn spawn_retry(
             last_log_line: None,
             log_count: 0,
             activity: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
         };
 
         {

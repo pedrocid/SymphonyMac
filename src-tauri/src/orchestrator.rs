@@ -67,6 +67,10 @@ pub struct AgentRun {
     pub log_count: u32,
     /// Detected activity state from log content
     pub activity: Option<String>,
+    /// Token usage from Claude result events
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +154,10 @@ pub struct OrchestratorStatus {
     pub total_completed: usize,
     pub total_failed: usize,
     pub active_count: usize,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cost_usd: f64,
+    pub total_runtime_secs: f64,
 }
 
 pub struct OrchestratorState {
@@ -159,6 +167,11 @@ pub struct OrchestratorState {
     pub config: RunConfig,
     pub agent_pids: HashMap<String, u32>,
     pub stop_flag: bool,
+    /// Cumulative token and cost totals across all runs
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cost_usd: f64,
+    pub total_runtime_secs: f64,
 }
 
 impl OrchestratorState {
@@ -170,6 +183,10 @@ impl OrchestratorState {
             config: RunConfig::default(),
             agent_pids: HashMap::new(),
             stop_flag: false,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost_usd: 0.0,
+            total_runtime_secs: 0.0,
         }
     }
 
@@ -209,6 +226,10 @@ pub async fn get_status(
         total_completed,
         total_failed,
         active_count,
+        total_input_tokens: s.total_input_tokens,
+        total_output_tokens: s.total_output_tokens,
+        total_cost_usd: s.total_cost_usd,
+        total_runtime_secs: s.total_runtime_secs,
     })
 }
 

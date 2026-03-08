@@ -27,6 +27,9 @@ export interface PipelineReport {
   issue_url: string;
   code_review_summary: string;
   testing_summary: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
 }
 
 const STAGE_COLORS: Record<string, string> = {
@@ -115,6 +118,12 @@ export function PipelineReportView({
     );
   }
 
+  function formatTokens(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return n.toString();
+  }
+
   const totalFiles = report.stages.reduce((acc, s) => acc + s.files_modified.length, 0);
   const totalAdded = report.stages.reduce((acc, s) => acc + s.lines_added, 0);
   const totalRemoved = report.stages.reduce((acc, s) => acc + s.lines_removed, 0);
@@ -179,6 +188,28 @@ export function PipelineReportView({
             <div className="text-xs text-[#8b949e]">Lines Removed</div>
           </div>
         </div>
+
+        {/* Token & Cost Metrics */}
+        {(report.total_cost_usd > 0 || report.total_input_tokens > 0) && (
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 text-center">
+              <div className="text-lg font-bold text-[#e6edf3]">
+                {formatTokens(report.total_input_tokens + report.total_output_tokens)}
+              </div>
+              <div className="text-xs text-[#8b949e]">Total Tokens</div>
+            </div>
+            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 text-center">
+              <div className="text-lg font-bold text-[#e6edf3]">
+                {formatTokens(report.total_input_tokens)} / {formatTokens(report.total_output_tokens)}
+              </div>
+              <div className="text-xs text-[#8b949e]">Input / Output</div>
+            </div>
+            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 text-center">
+              <div className="text-lg font-bold text-[#3fb950]">${report.total_cost_usd.toFixed(4)}</div>
+              <div className="text-xs text-[#8b949e]">Total Cost</div>
+            </div>
+          </div>
+        )}
 
         {/* Time Breakdown */}
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
