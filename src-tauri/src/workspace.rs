@@ -134,8 +134,8 @@ pub async fn list_workspaces() -> Result<Vec<WorkspaceInfo>, String> {
         return Ok(Vec::new());
     }
 
-    let entries = std::fs::read_dir(&root)
-        .map_err(|e| format!("Failed to read workspace dir: {}", e))?;
+    let entries =
+        std::fs::read_dir(&root).map_err(|e| format!("Failed to read workspace dir: {}", e))?;
 
     let now = std::time::SystemTime::now();
     let mut workspaces = Vec::new();
@@ -181,7 +181,11 @@ pub async fn list_workspaces() -> Result<Vec<WorkspaceInfo>, String> {
         });
     }
 
-    workspaces.sort_by(|a, b| b.age_days.partial_cmp(&a.age_days).unwrap_or(std::cmp::Ordering::Equal));
+    workspaces.sort_by(|a, b| {
+        b.age_days
+            .partial_cmp(&a.age_days)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(workspaces)
 }
@@ -209,9 +213,11 @@ pub async fn cleanup_old_workspaces(max_age_days: f64) -> Result<u32, String> {
 pub async fn cleanup_single_workspace(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
     let root = workspace_root();
-    let canonical_path = p.canonicalize()
+    let canonical_path = p
+        .canonicalize()
         .map_err(|e| format!("Invalid workspace path: {}", e))?;
-    let canonical_root = root.canonicalize()
+    let canonical_root = root
+        .canonicalize()
         .map_err(|e| format!("Workspace root not found: {}", e))?;
     if !canonical_path.starts_with(&canonical_root) {
         return Err("Path is outside the workspace directory".to_string());

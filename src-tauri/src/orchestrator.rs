@@ -261,18 +261,13 @@ pub async fn get_agent_logs(
 }
 
 #[tauri::command]
-pub async fn search_agent_logs(
-    run_id: String,
-    query: String,
-) -> Result<Vec<String>, String> {
+pub async fn search_agent_logs(run_id: String, query: String) -> Result<Vec<String>, String> {
     let results = crate::logs::search_logs(&run_id, &query);
     Ok(results)
 }
 
 #[tauri::command]
-pub async fn export_logs_text(
-    run_id: String,
-) -> Result<String, String> {
+pub async fn export_logs_text(run_id: String) -> Result<String, String> {
     let text = crate::logs::export_as_text(&run_id);
     if text.is_empty() {
         Err("No logs found for this run".to_string())
@@ -282,9 +277,7 @@ pub async fn export_logs_text(
 }
 
 #[tauri::command]
-pub async fn export_logs_json(
-    run_id: String,
-) -> Result<String, String> {
+pub async fn export_logs_json(run_id: String) -> Result<String, String> {
     let json = crate::logs::export_as_json(&run_id);
     if json.is_empty() {
         Err("No logs found for this run".to_string())

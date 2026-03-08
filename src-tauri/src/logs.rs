@@ -41,11 +41,7 @@ fn meta_file_path(run_id: &str) -> PathBuf {
 /// Write a single log line to the file on disk (append).
 pub fn append_log_line(run_id: &str, line: &str) {
     let path = log_file_path(run_id);
-    if let Ok(mut file) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
         let timestamp = Utc::now().to_rfc3339();
         let _ = writeln!(file, "[{}] {}", timestamp, line);
     }

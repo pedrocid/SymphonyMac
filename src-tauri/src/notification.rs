@@ -18,12 +18,7 @@ pub fn notify_pipeline_done(app: &AppHandle, issue_number: u64, issue_title: &st
     );
 }
 
-pub fn notify_pipeline_failed(
-    app: &AppHandle,
-    issue_number: u64,
-    stage: &str,
-    sound: bool,
-) {
+pub fn notify_pipeline_failed(app: &AppHandle, issue_number: u64, stage: &str, sound: bool) {
     send_notification(
         app,
         "Pipeline Failed",
