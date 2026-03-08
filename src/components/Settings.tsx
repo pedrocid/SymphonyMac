@@ -46,6 +46,7 @@ export function Settings() {
       timeout_secs: 60,
     },
     priority_labels: ["priority:critical", "priority:high", "priority:medium", "priority:low"],
+    stall_timeout_secs: 300,
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -338,6 +339,24 @@ export function Settings() {
                 />
                 <p className="text-xs text-[#8b949e] mt-1">
                   Maximum delay cap in seconds (default: 300s / 5 minutes).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">Stall Timeout (seconds)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={3600}
+                  value={config.stall_timeout_secs}
+                  onChange={(e) =>
+                    setConfig({ ...config, stall_timeout_secs: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Kill agents that produce no output for this duration. Set to 0 to disable.
+                  Default: 300s (5 minutes).
                 </p>
               </div>
 

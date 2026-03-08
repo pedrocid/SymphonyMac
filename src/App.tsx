@@ -38,6 +38,7 @@ export interface RunConfig {
   stage_prompts: Record<string, string>;
   hooks: LifecycleHooks;
   priority_labels: string[];
+  stall_timeout_secs: number;
 }
 
 function App() {
