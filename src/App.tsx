@@ -40,6 +40,7 @@ export interface RunConfig {
   priority_labels: string[];
   stall_timeout_secs: number;
   stage_skip_labels: Record<string, string[]>;
+  approval_gates: Record<string, boolean>;
 }
 
 function App() {

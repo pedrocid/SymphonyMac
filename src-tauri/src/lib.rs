@@ -53,6 +53,8 @@ pub fn run() {
             agent::stop_agent,
             agent::retry_agent,
             agent::retry_agent_from_stage,
+            agent::approve_stage,
+            agent::reject_stage,
             agent::get_default_prompts,
             orchestrator::get_pipeline_report,
             orchestrator::search_agent_logs,

@@ -24,7 +24,12 @@ fn state_file_path() -> PathBuf {
 /// Excludes runtime-only fields like agent_pids and stop_flag.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedState {
+    /// Legacy field for backward compatibility with old persisted state files.
+    #[serde(default)]
     pub repo: Option<String>,
+    /// List of monitored repositories.
+    #[serde(default)]
+    pub repos: Vec<String>,
     pub runs: HashMap<String, AgentRun>,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
@@ -36,7 +41,8 @@ pub struct PersistedState {
 /// Called on every status transition (stage change, completion, failure).
 pub fn save_state(state: &crate::orchestrator::OrchestratorState) {
     let persisted = PersistedState {
-        repo: state.repo.clone(),
+        repo: None,
+        repos: state.repos.clone(),
         runs: state.runs.clone(),
         total_input_tokens: state.total_input_tokens,
         total_output_tokens: state.total_output_tokens,
@@ -170,6 +176,7 @@ mod tests {
             issue_labels: vec![],
             skipped_stages: vec![],
             stage_context: None,
+            pending_next_stage: None,
         }
     }
 
@@ -187,6 +194,7 @@ mod tests {
 
         let original = PersistedState {
             repo: Some("test/repo".to_string()),
+            repos: vec!["test/repo".to_string()],
             runs,
             total_input_tokens: 1000,
             total_output_tokens: 2000,
@@ -229,6 +237,7 @@ mod tests {
 
         let persisted = PersistedState {
             repo: Some("test/repo".to_string()),
+            repos: vec!["test/repo".to_string()],
             runs,
             total_input_tokens: 0,
             total_output_tokens: 0,
@@ -282,7 +291,7 @@ mod tests {
 
         let state = OrchestratorState {
             is_running: false,
-            repo: Some("test/repo".to_string()),
+            repos: vec!["test/repo".to_string()],
             runs,
             config: Default::default(),
             agent_pids: HashMap::new(),
@@ -317,6 +326,7 @@ mod tests {
     fn test_token_cost_aggregates_persist() {
         let persisted = PersistedState {
             repo: Some("test/repo".to_string()),
+            repos: vec!["test/repo".to_string()],
             runs: HashMap::new(),
             total_input_tokens: 50000,
             total_output_tokens: 75000,

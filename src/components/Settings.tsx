@@ -52,6 +52,7 @@ export function Settings() {
       "skip:testing": ["testing"],
       "docs-only": ["code_review", "testing"],
     },
+    approval_gates: {},
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -416,6 +417,51 @@ export function Settings() {
                 Issues without any priority label are dispatched last. Within the same priority,
                 older issues are dispatched first.
               </p>
+            </div>
+          </div>
+
+          {/* Approval Gates (Human-in-the-loop) */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-1">Human-in-the-Loop</h3>
+            <p className="text-xs text-[#8b949e] mb-4">
+              Enable approval gates to pause the pipeline after a stage completes and wait for your explicit
+              approval before advancing. All gates are off by default (fully automatic).
+            </p>
+
+            <div className="space-y-3">
+              {STAGE_KEYS.map((stage) => {
+                const isEnabled = config.approval_gates?.[stage] ?? false;
+                return (
+                  <div key={stage} className="flex items-center justify-between">
+                    <div>
+                      <label className="text-sm text-[#e6edf3]">{STAGE_LABELS[stage]}</label>
+                      <p className="text-xs text-[#8b949e] mt-0.5">
+                        Pause after {STAGE_LABELS[stage].toLowerCase()} completes
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const updated = { ...(config.approval_gates || {}) };
+                        if (isEnabled) {
+                          delete updated[stage];
+                        } else {
+                          updated[stage] = true;
+                        }
+                        setConfig({ ...config, approval_gates: updated });
+                      }}
+                      className={`w-12 h-6 rounded-full transition-colors relative ${
+                        isEnabled ? "bg-[#d29922]" : "bg-[#30363d]"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                          isEnabled ? "left-[26px]" : "left-0.5"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
