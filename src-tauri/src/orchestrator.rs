@@ -38,6 +38,60 @@ impl std::fmt::Display for PipelineStage {
     }
 }
 
+/// Structured context generated at the end of each pipeline stage,
+/// injected into the next stage's prompt to provide continuity.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StageContext {
+    /// Which stage produced this context
+    pub from_stage: String,
+    /// Files that were modified (from git diff)
+    pub files_changed: Vec<String>,
+    /// Lines added in this stage
+    pub lines_added: u32,
+    /// Lines removed in this stage
+    pub lines_removed: u32,
+    /// PR number if one was created or exists
+    pub pr_number: Option<u64>,
+    /// Branch name for the PR
+    pub branch_name: Option<String>,
+    /// Key summary extracted from agent logs (review comments, test results, etc.)
+    pub summary: String,
+}
+
+impl StageContext {
+    /// Format this context as a concise section to append to a prompt.
+    /// Kept under ~500 tokens to avoid bloating the prompt.
+    pub fn to_prompt_section(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(format!("## Context from {} stage", self.from_stage));
+
+        if !self.files_changed.is_empty() {
+            let files_list: String = self.files_changed.iter()
+                .take(20) // cap at 20 files to keep concise
+                .map(|f| format!("  - {}", f))
+                .collect::<Vec<_>>()
+                .join("\n");
+            parts.push(format!("Files changed ({} added, {} removed):\n{}", self.lines_added, self.lines_removed, files_list));
+            if self.files_changed.len() > 20 {
+                parts.push(format!("  ... and {} more files", self.files_changed.len() - 20));
+            }
+        }
+
+        if let Some(pr) = self.pr_number {
+            parts.push(format!("PR number: #{}", pr));
+        }
+        if let Some(ref branch) = self.branch_name {
+            parts.push(format!("Branch: {}", branch));
+        }
+
+        if !self.summary.is_empty() {
+            parts.push(format!("Summary: {}", self.summary));
+        }
+
+        parts.join("\n")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRun {
     pub id: String,
@@ -80,6 +134,9 @@ pub struct AgentRun {
     /// Stages that were skipped for this issue based on label rules
     #[serde(default)]
     pub skipped_stages: Vec<String>,
+    /// Structured context from the previous pipeline stage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_context: Option<StageContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,10 +634,10 @@ pub async fn resume_pipeline(
         info
     };
 
-    // Fetch the issue body from GitHub so the prompt has full context
-    let issue_body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
-        Ok(issue) => issue.body.unwrap_or_default(),
-        Err(_) => String::new(),
+    // Fetch the issue body and labels from GitHub so the prompt has full context
+    let (issue_body, issue_labels) = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
+        Err(_) => (String::new(), Vec::new()),
     };
 
     crate::agent::launch_agent(
@@ -591,6 +648,7 @@ pub async fn resume_pipeline(
         issue_title,
         issue_body,
         resume_stage,
+        issue_labels,
     )
     .await
     .map(|_| ())

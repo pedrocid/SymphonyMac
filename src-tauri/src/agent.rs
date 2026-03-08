@@ -1,5 +1,5 @@
 use crate::logs;
-use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig};
+use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig, StageContext};
 use crate::report;
 use crate::workspace;
 use crate::SharedState;
@@ -158,13 +158,20 @@ fn build_prompt(
     stage_prompts: &std::collections::HashMap<String, String>,
     attempt: u32,
     previous_error: &str,
+    previous_context: Option<&StageContext>,
 ) -> String {
     let stage_key = stage.to_string();
     let template = match stage_prompts.get(&stage_key) {
         Some(custom) if !custom.trim().is_empty() => custom.as_str(),
         _ => default_prompt(stage),
     };
-    let rendered = render_template(template, issue_number, repo, issue_title, issue_body, attempt, previous_error);
+    let mut rendered = render_template(template, issue_number, repo, issue_title, issue_body, attempt, previous_error);
+
+    // Inject structured context from the previous stage
+    if let Some(ctx) = previous_context {
+        rendered = format!("{}\n\n{}", rendered, ctx.to_prompt_section());
+    }
+
     // If the template doesn't use {{previous_error}} and we have one, append it so retry context isn't lost
     if !previous_error.is_empty() && !template.contains("{{previous_error}}") {
         format!(
@@ -400,6 +407,152 @@ fn truncate_json(value: &serde_json::Value, max_len: usize) -> String {
     }
 }
 
+/// Extract a structured `StageContext` from a completed agent run's data and logs.
+fn extract_stage_context(run: &AgentRun, repo: &str) -> StageContext {
+    let from_stage = run.stage.to_string();
+    let files_changed = run.files_modified_list.clone();
+    let lines_added = run.lines_added;
+    let lines_removed = run.lines_removed;
+
+    // Try to detect PR number from logs (looks for "gh pr create" output or PR URLs)
+    let pr_number = detect_pr_number_from_logs(&run.logs, repo);
+
+    // Try to detect branch name from logs
+    let branch_name = detect_branch_from_logs(&run.logs);
+
+    // Build a concise summary based on the stage type
+    let summary = build_stage_summary(&run.stage, &run.logs);
+
+    StageContext {
+        from_stage,
+        files_changed,
+        lines_added,
+        lines_removed,
+        pr_number,
+        branch_name,
+        summary,
+    }
+}
+
+/// Scan agent logs for a PR number (e.g. from "gh pr create" output or PR URLs).
+fn detect_pr_number_from_logs(logs: &[String], repo: &str) -> Option<u64> {
+    // Pattern: github.com/owner/repo/pull/123 or #123 in PR creation context
+    let pr_url_suffix = format!("{}/pull/", repo);
+    for line in logs.iter().rev() {
+        // Check for PR URL pattern
+        if let Some(pos) = line.find(&pr_url_suffix) {
+            let after = &line[pos + pr_url_suffix.len()..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                return Some(n);
+            }
+        }
+        // Check for "pull request #N" or "PR #N" patterns
+        for prefix in &["pull request #", "PR #", "pr #"] {
+            if let Some(pos) = line.to_lowercase().find(prefix) {
+                let after = &line[pos + prefix.len()..];
+                let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(n) = num_str.parse::<u64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Scan agent logs for a branch name (e.g. from git checkout or PR creation).
+fn detect_branch_from_logs(logs: &[String]) -> Option<String> {
+    for line in logs.iter().rev() {
+        // Look for "headRefName" in JSON output from gh pr list
+        if line.contains("headRefName") {
+            if let Some(pos) = line.find("headRefName") {
+                let after = &line[pos..];
+                // Try to extract the value after the key
+                if let Some(colon_pos) = after.find(':') {
+                    let value_part = after[colon_pos + 1..].trim().trim_matches(|c| c == '"' || c == ',' || c == ' ');
+                    let branch: String = value_part.chars().take_while(|c| !c.is_whitespace() && *c != '"' && *c != ',').collect();
+                    if !branch.is_empty() {
+                        return Some(branch);
+                    }
+                }
+            }
+        }
+        // Look for "git checkout -b <branch>" or "Switched to branch"
+        if line.contains("checkout -b ") {
+            if let Some(pos) = line.find("checkout -b ") {
+                let after = &line[pos + "checkout -b ".len()..];
+                let branch: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+                if !branch.is_empty() {
+                    return Some(branch);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build a concise summary string from agent logs based on stage type.
+/// Keeps output under ~200 chars to stay within the ~500 token budget.
+fn build_stage_summary(stage: &PipelineStage, logs: &[String]) -> String {
+    match stage {
+        PipelineStage::Implement => {
+            // Look for commit messages or key decisions
+            let mut commits = Vec::new();
+            for line in logs {
+                if line.contains("git commit") || line.contains("Commit") {
+                    let summary: String = line.chars().take(100).collect();
+                    commits.push(summary);
+                }
+            }
+            if commits.is_empty() {
+                "Implementation completed.".to_string()
+            } else {
+                commits.into_iter().take(3).collect::<Vec<_>>().join("; ")
+            }
+        }
+        PipelineStage::CodeReview => {
+            // Look for review findings
+            let mut findings = Vec::new();
+            for line in logs {
+                let lower = line.to_lowercase();
+                if lower.contains("issue") || lower.contains("fix") || lower.contains("bug")
+                    || lower.contains("suggestion") || lower.contains("approved")
+                    || lower.contains("review completed")
+                {
+                    let summary: String = line.chars().take(100).collect();
+                    findings.push(summary);
+                }
+            }
+            if findings.is_empty() {
+                "Code review completed.".to_string()
+            } else {
+                findings.into_iter().take(3).collect::<Vec<_>>().join("; ")
+            }
+        }
+        PipelineStage::Testing => {
+            // Look for test results
+            let mut results = Vec::new();
+            for line in logs {
+                let lower = line.to_lowercase();
+                if lower.contains("pass") || lower.contains("fail") || lower.contains("test")
+                    || lower.contains("error") || lower.contains("ok")
+                {
+                    let summary: String = line.chars().take(100).collect();
+                    results.push(summary);
+                }
+            }
+            if results.is_empty() {
+                "Testing completed.".to_string()
+            } else {
+                // Take the last few results (most relevant)
+                results.into_iter().rev().take(3).collect::<Vec<_>>().join("; ")
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>) {
     match config.agent_type.as_str() {
         "codex" => {
@@ -460,7 +613,7 @@ pub async fn launch_agent(
     let skipped = crate::orchestrator::compute_skipped_stages(&issue_labels, &config.stage_skip_labels);
     let skipped_stage_names: Vec<String> = skipped.iter().map(|s| s.to_string()).collect();
 
-    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "");
+    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "", None);
     let (cmd, args) = build_command_args(&config, &prompt);
     let command_display = format_command_display(&cmd, &args);
 
@@ -493,6 +646,7 @@ pub async fn launch_agent(
         last_log_timestamp: None,
         issue_labels: issue_labels.clone(),
         skipped_stages: skipped_stage_names,
+        stage_context: None,
     };
 
     {
@@ -1158,6 +1312,21 @@ async fn run_agent_process(
 
     // AUTO-CHAIN: If the stage completed successfully, advance to the next stage
     if succeeded {
+        // Extract structured context from the completed stage
+        let stage_ctx = {
+            let s = state.lock().await;
+            s.runs.get(&run_id).map(|r| extract_stage_context(r, &repo))
+        };
+
+        // Store the context back into the run for persistence
+        if let Some(ref ctx) = stage_ctx {
+            let mut s = state.lock().await;
+            if let Some(run) = s.runs.get_mut(&run_id) {
+                run.stage_context = Some(ctx.clone());
+            }
+            s.persist();
+        }
+
         // Compute which stages to skip based on issue labels
         let skipped_stages = {
             let s = state.lock().await;
@@ -1331,6 +1500,7 @@ async fn run_agent_process(
                     last_log_timestamp: None,
                     issue_labels: issue_labels.clone(),
                     skipped_stages: done_skipped,
+                    stage_context: None,
                 };
                 {
                     let mut s = state.lock().await;
@@ -1389,6 +1559,7 @@ async fn run_agent_process(
                 next,
                 workspace_path,
                 issue_labels,
+                stage_ctx,
             );
         }
     }
@@ -1405,6 +1576,7 @@ fn spawn_next_stage(
     stage: PipelineStage,
     workspace_path: std::path::PathBuf,
     issue_labels: Vec<String>,
+    previous_context: Option<StageContext>,
 ) {
     let stage_label = stage.to_string();
 
@@ -1517,6 +1689,7 @@ fn spawn_next_stage(
             last_log_timestamp: None,
             issue_labels: issue_labels.clone(),
             skipped_stages: skipped_stage_names,
+            stage_context: None,
         };
 
         {
@@ -1546,7 +1719,7 @@ fn spawn_next_stage(
             }),
         );
 
-        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "");
+        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "", previous_context.as_ref());
         let (cmd, args) = build_command_args(&config, &prompt);
         let command_display = format_command_display(&cmd, &args);
 
@@ -1660,6 +1833,7 @@ fn spawn_retry(
             last_log_timestamp: None,
             issue_labels: issue_labels.clone(),
             skipped_stages: skipped_stage_names,
+            stage_context: None,
         };
 
         {
@@ -1679,7 +1853,7 @@ fn spawn_retry(
             }),
         );
 
-        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, attempt, &previous_error);
+        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, attempt, &previous_error, None);
         let (cmd, args) = build_command_args(&config, &prompt);
         let command_display = format_command_display(&cmd, &args);
         {
