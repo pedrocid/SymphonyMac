@@ -62,7 +62,10 @@ pub(crate) enum SuccessfulStageAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FailureAction {
-    Retry { next_attempt: u32, backoff_secs: u64 },
+    Retry {
+        next_attempt: u32,
+        backoff_secs: u64,
+    },
     Exhausted,
 }
 
@@ -74,6 +77,13 @@ pub(crate) struct PipelineCompletionSpec {
     pub workspace_path: PathBuf,
     pub issue_labels: Vec<String>,
     pub skipped_stages: Vec<PipelineStage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UsageTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
 }
 
 pub(crate) fn compute_retry_backoff(config: &RunConfig, attempt: u32) -> u64 {
@@ -165,8 +175,7 @@ pub(crate) fn spawn_next_stage(app: AppHandle, state: SharedState, spec: StageLa
             s.config.clone()
         };
 
-        let request =
-            prepare_and_register_stage_run(&app, &state, &config, spec, Map::new()).await;
+        let request = prepare_and_register_stage_run(&app, &state, &config, spec, Map::new()).await;
         run_agent_process(app, state, request).await;
     });
 }
@@ -193,8 +202,7 @@ pub(crate) fn spawn_retry(
         emit_extra.insert("attempt".to_string(), json!(spec.attempt));
         emit_extra.insert("max_retries".to_string(), json!(spec.max_retries + 1));
 
-        let request =
-            prepare_and_register_stage_run(&app, &state, &config, spec, emit_extra).await;
+        let request = prepare_and_register_stage_run(&app, &state, &config, spec, emit_extra).await;
         run_agent_process(app, state, request).await;
     });
 }
@@ -206,7 +214,8 @@ pub(crate) async fn finish_pipeline(
 ) {
     let stage_runs =
         collect_latest_stage_runs(state, &completion.repo, completion.issue_number).await;
-    let (done_run, pipeline_report) = build_done_run(&completion, stage_runs);
+    let usage_totals = collect_usage_totals(state, &completion.repo, completion.issue_number).await;
+    let (done_run, pipeline_report) = build_done_run(&completion, stage_runs, usage_totals);
     let done_run_id = done_run.id.clone();
 
     {
@@ -278,10 +287,8 @@ fn prepare_stage_run(config: &RunConfig, spec: StageLaunchSpec) -> PreparedStage
     );
     let (command, args) = build_command_args(config, &prompt);
     let command_display = format_command_display(&command, &args);
-    let skipped = crate::orchestrator::compute_skipped_stages(
-        &spec.issue_labels,
-        &config.stage_skip_labels,
-    );
+    let skipped =
+        crate::orchestrator::compute_skipped_stages(&spec.issue_labels, &config.stage_skip_labels);
     let skipped_stage_names: Vec<String> = skipped.iter().map(ToString::to_string).collect();
 
     let mut logs = Vec::new();
@@ -365,7 +372,10 @@ async fn wait_for_stage_slot(
     loop {
         let (can_launch, stopped) = {
             let s = state.lock().await;
-            (crate::orchestrator::can_launch_stage(&s, stage), s.stop_flag)
+            (
+                crate::orchestrator::can_launch_stage(&s, stage),
+                s.stop_flag,
+            )
         };
 
         if stopped {
@@ -452,9 +462,33 @@ async fn collect_latest_stage_runs(
         .collect()
 }
 
+async fn collect_usage_totals(state: &SharedState, repo: &str, issue_number: u64) -> UsageTotals {
+    let s = state.lock().await;
+
+    aggregate_usage_totals(s.runs.values().filter(|run| {
+        run.repo == repo && run.issue_number == issue_number && run.stage != PipelineStage::Done
+    }))
+}
+
+fn aggregate_usage_totals<'a>(runs: impl IntoIterator<Item = &'a AgentRun>) -> UsageTotals {
+    runs.into_iter().fold(
+        UsageTotals {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        },
+        |totals, run| UsageTotals {
+            input_tokens: totals.input_tokens + run.input_tokens,
+            output_tokens: totals.output_tokens + run.output_tokens,
+            cost_usd: totals.cost_usd + run.cost_usd,
+        },
+    )
+}
+
 fn build_done_run(
     completion: &PipelineCompletionSpec,
     stage_runs: Vec<AgentRun>,
+    usage_totals: UsageTotals,
 ) -> (AgentRun, crate::report::PipelineReport) {
     let done_id = Uuid::new_v4().to_string();
     let mut aggregated_logs = Vec::new();
@@ -483,10 +517,6 @@ fn build_done_run(
         stage_refs,
     );
 
-    let total_input: u64 = stage_runs.iter().map(|run| run.input_tokens).sum();
-    let total_output: u64 = stage_runs.iter().map(|run| run.output_tokens).sum();
-    let total_cost: f64 = stage_runs.iter().map(|run| run.cost_usd).sum();
-
     let done_run = AgentRun {
         id: done_id,
         repo: completion.repo.clone(),
@@ -510,9 +540,9 @@ fn build_done_run(
         last_log_line: None,
         log_count: 0,
         activity: Some("Completed".to_string()),
-        input_tokens: total_input,
-        output_tokens: total_output,
-        cost_usd: total_cost,
+        input_tokens: usage_totals.input_tokens,
+        output_tokens: usage_totals.output_tokens,
+        cost_usd: usage_totals.cost_usd,
         last_log_timestamp: None,
         issue_labels: completion.issue_labels.clone(),
         skipped_stages: completion
@@ -566,7 +596,9 @@ fn detect_branch_from_logs(logs: &[String]) -> Option<String> {
                 if let Some(colon_position) = after.find(':') {
                     let value_part = after[colon_position + 1..]
                         .trim()
-                        .trim_matches(|character| character == '"' || character == ',' || character == ' ');
+                        .trim_matches(|character| {
+                            character == '"' || character == ',' || character == ' '
+                        });
                     let branch: String = value_part
                         .chars()
                         .take_while(|character| {
@@ -645,7 +677,12 @@ fn build_stage_summary(stage: &PipelineStage, logs: &[String]) -> String {
             if results.is_empty() {
                 "Testing completed.".to_string()
             } else {
-                results.into_iter().rev().take(3).collect::<Vec<_>>().join("; ")
+                results
+                    .into_iter()
+                    .rev()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             }
         }
         _ => String::new(),
@@ -655,10 +692,54 @@ fn build_stage_summary(stage: &PipelineStage, logs: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        decide_failure_action, decide_successful_stage_action, FailureAction, MergeVerification,
-        SuccessfulStageAction,
+        aggregate_usage_totals, build_done_run, decide_failure_action,
+        decide_successful_stage_action, FailureAction, MergeVerification, PipelineCompletionSpec,
+        SuccessfulStageAction, UsageTotals,
     };
-    use crate::orchestrator::{PipelineStage, RunConfig};
+    use crate::orchestrator::{AgentRun, AgentStatus, PipelineStage, RunConfig};
+    use std::path::PathBuf;
+
+    fn sample_run(
+        id: &str,
+        stage: PipelineStage,
+        started_at: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: f64,
+    ) -> AgentRun {
+        AgentRun {
+            id: id.to_string(),
+            repo: "pedrocid/SymphonyMac".to_string(),
+            issue_number: 57,
+            issue_title: "Split agent.rs".to_string(),
+            status: AgentStatus::Completed,
+            stage,
+            started_at: started_at.to_string(),
+            finished_at: Some(started_at.to_string()),
+            logs: vec![format!("log {}", id)],
+            workspace_path: "/tmp/workspace".to_string(),
+            error: None,
+            attempt: 1,
+            max_retries: 1,
+            lines_added: 0,
+            lines_removed: 0,
+            files_modified_list: Vec::new(),
+            report: None,
+            command_display: None,
+            agent_type: "claude".to_string(),
+            last_log_line: None,
+            log_count: 0,
+            activity: None,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            last_log_timestamp: None,
+            issue_labels: Vec::new(),
+            skipped_stages: Vec::new(),
+            stage_context: None,
+            pending_next_stage: None,
+        }
+    }
 
     #[test]
     fn implementation_can_skip_review_and_advance_to_testing() {
@@ -770,6 +851,104 @@ mod tests {
     #[test]
     fn retry_action_stops_after_max_attempts() {
         let config = RunConfig::default();
-        assert_eq!(decide_failure_action(3, 2, &config), FailureAction::Exhausted);
+        assert_eq!(
+            decide_failure_action(3, 2, &config),
+            FailureAction::Exhausted
+        );
+    }
+
+    #[test]
+    fn aggregate_usage_totals_counts_all_attempts_and_ignores_done_stage() {
+        let runs = vec![
+            sample_run(
+                "attempt-1",
+                PipelineStage::Implement,
+                "2026-03-08T10:00:00Z",
+                100,
+                40,
+                1.5,
+            ),
+            sample_run(
+                "attempt-2",
+                PipelineStage::Implement,
+                "2026-03-08T10:05:00Z",
+                250,
+                90,
+                2.25,
+            ),
+            sample_run(
+                "testing",
+                PipelineStage::Testing,
+                "2026-03-08T10:10:00Z",
+                30,
+                15,
+                0.5,
+            ),
+            sample_run(
+                "done",
+                PipelineStage::Done,
+                "2026-03-08T10:15:00Z",
+                999,
+                999,
+                9.9,
+            ),
+        ];
+
+        let totals =
+            aggregate_usage_totals(runs.iter().filter(|run| run.stage != PipelineStage::Done));
+
+        assert_eq!(
+            totals,
+            UsageTotals {
+                input_tokens: 380,
+                output_tokens: 145,
+                cost_usd: 4.25,
+            }
+        );
+    }
+
+    #[test]
+    fn build_done_run_uses_aggregate_usage_totals() {
+        let completion = PipelineCompletionSpec {
+            repo: "pedrocid/SymphonyMac".to_string(),
+            issue_number: 57,
+            issue_title: "Split agent.rs".to_string(),
+            workspace_path: PathBuf::from("/tmp/workspace"),
+            issue_labels: vec!["refactor".to_string()],
+            skipped_stages: vec![PipelineStage::CodeReview],
+        };
+        let latest_stage_runs = vec![
+            sample_run(
+                "implement-latest",
+                PipelineStage::Implement,
+                "2026-03-08T10:05:00Z",
+                250,
+                90,
+                2.25,
+            ),
+            sample_run(
+                "testing",
+                PipelineStage::Testing,
+                "2026-03-08T10:10:00Z",
+                30,
+                15,
+                0.5,
+            ),
+        ];
+
+        let (done_run, _) = build_done_run(
+            &completion,
+            latest_stage_runs,
+            UsageTotals {
+                input_tokens: 380,
+                output_tokens: 145,
+                cost_usd: 4.25,
+            },
+        );
+
+        assert_eq!(done_run.input_tokens, 380);
+        assert_eq!(done_run.output_tokens, 145);
+        assert_eq!(done_run.cost_usd, 4.25);
+        assert_eq!(done_run.skipped_stages, vec!["code_review".to_string()]);
     }
 }

@@ -48,7 +48,8 @@ You are a code reviewer for repository {{repo}}.
 A Pull Request has been created for issue #{{issue_number}}: {{issue_title}}
 
 Instructions:
-1. Run: gh pr list --state open --json number,title,headRefName | to find the PR for issue #{{issue_number}}
+1. Run this command to find the PR for issue #{{issue_number}}:
+   gh pr list --state open --json number,title,headRefName
 2. Check out the PR branch
 3. Review ALL changed files carefully. Look for:
    - Bugs, logic errors, edge cases
@@ -71,7 +72,8 @@ Issue description:
 {{issue_body}}
 
 Instructions:
-1. Run: gh pr list --state open --json number,title,headRefName | to find the PR for issue #{{issue_number}}
+1. Run this command to find the PR for issue #{{issue_number}}:
+   gh pr list --state open --json number,title,headRefName
 2. Check out the PR branch
 3. Identify the project type and run the appropriate test commands:
    - Node.js: npm test or npm run test
@@ -110,7 +112,8 @@ You are a release engineer for repository {{repo}}.
 A Pull Request for issue #{{issue_number}}: {{issue_title}} has passed code review and all tests.
 
 Instructions:
-1. Run: gh pr list -R {{repo}} --state open --json number,title,headRefName | to find the PR for issue #{{issue_number}}
+1. Run this command to find the PR for issue #{{issue_number}}:
+   gh pr list -R {{repo}} --state open --json number,title,headRefName
 2. Check out the PR branch and update it against the base branch to detect conflicts BEFORE merging:
    gh pr checkout <PR_NUMBER> -R {{repo}}
    git fetch origin main && git rebase origin/main
@@ -238,6 +241,37 @@ pub(crate) fn build_command_args(config: &RunConfig, prompt: &str) -> (String, V
             }
             args.push(prompt.to_string());
             (crate::paths::resolve("claude"), args)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_prompt;
+    use crate::orchestrator::PipelineStage;
+    use std::collections::HashMap;
+
+    #[test]
+    fn gh_pr_lookup_prompts_do_not_include_a_trailing_pipe() {
+        for stage in [
+            PipelineStage::CodeReview,
+            PipelineStage::Testing,
+            PipelineStage::Merge,
+        ] {
+            let prompt = build_prompt(
+                &stage,
+                57,
+                "pedrocid/SymphonyMac",
+                "Split agent.rs into focused pipeline and process modules",
+                "",
+                &HashMap::new(),
+                1,
+                "",
+                None,
+            );
+
+            assert!(!prompt.contains("headRefName |"));
+            assert!(!prompt.contains("headRefName to find"));
         }
     }
 }
