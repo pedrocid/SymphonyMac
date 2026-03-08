@@ -24,7 +24,7 @@ interface AgentRun {
 
 interface OrchestratorStatus {
   is_running: boolean;
-  repo: string | null;
+  repos: string[];
   runs: AgentRun[];
   config: { max_concurrent: number };
   total_completed: number;

@@ -30,11 +30,12 @@ interface Issue {
   url: string;
   created_at: string;
   updated_at: string;
+  _repo?: string;
 }
 
 interface OrchestratorStatus {
   is_running: boolean;
-  repo: string | null;
+  repos: string[];
   runs: AgentRun[];
   config: any;
   total_completed: number;
@@ -48,6 +49,7 @@ interface OrchestratorStatus {
 
 type KanbanCard = {
   id: string;
+  repo?: string;
   number: number;
   title: string;
   labels: string[];
@@ -104,12 +106,16 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try {
       const result = await invoke<OrchestratorStatus>("get_status");
       setStatus(result);
-      if (result.repo) {
+      if (result.repos.length > 0) {
         try {
-          const allIssues = await invoke<Issue[]>("list_issues", {
-            repo: result.repo, state: "all", label: null,
-          });
-          setIssues(allIssues);
+          const allRepoIssues: Issue[] = [];
+          for (const repo of result.repos) {
+            const repoIssues = await invoke<Issue[]>("list_issues", {
+              repo, state: "all", label: null,
+            });
+            allRepoIssues.push(...repoIssues.map((i) => ({ ...i, _repo: repo })));
+          }
+          setIssues(allRepoIssues);
         } catch (_) {}
       }
     } catch (e) {
@@ -129,11 +135,10 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try { await invoke("retry_agent", { runId }); loadStatus(); } catch (e) { setError(String(e)); }
   }
 
-  async function launchIssue(issue: Issue) {
-    if (!status?.repo) return;
+  async function launchIssue(issue: Issue, repo: string) {
     try {
       await invoke("start_single_issue", {
-        repo: status.repo, issueNumber: issue.number,
+        repo, issueNumber: issue.number,
         issueTitle: issue.title, issueBody: issue.body,
         issueLabels: issue.labels,
       });
@@ -198,7 +203,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const doneCards: KanbanCard[] = [];
   const failedCards: KanbanCard[] = [];
 
-  function makeCard(issue: Issue | null, run: AgentRun | null): KanbanCard {
+  function makeCard(issue: Issue | null, run: AgentRun | null, repo?: string): KanbanCard {
     // Collect skipped stages from all runs for this issue
     const issueNum = issue?.number || run?.issue_number || 0;
     const allIssueRuns = allRunsByIssue.get(issueNum) || [];
@@ -208,6 +213,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
     return {
       id: run?.id || `issue-${issue?.number}`,
+      repo: repo || run?.repo,
       number: issueNum,
       title: issue?.title || run?.issue_title || "",
       labels: issue?.labels || [],
@@ -275,12 +281,12 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     if (issue.state === "OPEN") {
       const blockers = blockedMap.get(issue.number);
       if (blockers && blockers.length > 0) {
-        blockedCards.push({ ...makeCard(issue, null), blockedBy: blockers });
+        blockedCards.push({ ...makeCard(issue, null, issue._repo), blockedBy: blockers });
       } else {
-        openCards.push(makeCard(issue, null));
+        openCards.push(makeCard(issue, null, issue._repo));
       }
     } else {
-      doneCards.push(makeCard(issue, null));
+      doneCards.push(makeCard(issue, null, issue._repo));
     }
   }
 
@@ -300,7 +306,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       {/* Top bar */}
       <div className="px-6 py-4 border-b border-[#30363d] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <h2 className="text-lg font-semibold text-[#e6edf3]">{status.repo || "Symphony"}</h2>
+          <h2 className="text-lg font-semibold text-[#e6edf3]">{status.repos.length > 0 ? status.repos.join(", ") : "Symphony"}</h2>
           <span className="text-xs text-[#8b949e] border border-[#30363d] rounded px-2 py-0.5">Board</span>
         </div>
         <div className="flex items-center gap-3">
@@ -384,7 +390,12 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                     className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 hover:border-[#484f58] transition-colors cursor-pointer group"
                     onClick={() => card.runId && onViewLogs(card.runId)}
                   >
-                    <div className="text-xs text-[#484f58] mb-1">#{card.number}</div>
+                    <div className="text-xs text-[#484f58] mb-1">
+                      {card.repo && status && status.repos.length > 1 && (
+                        <span className="text-[#8b949e] mr-1">{card.repo.split("/").pop()}</span>
+                      )}
+                      #{card.number}
+                    </div>
                     <div className="text-sm text-[#e6edf3] font-medium mb-2 leading-snug">{card.title}</div>
 
                     {/* Running indicator with stage */}
@@ -477,11 +488,11 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                             Retry
                           </button>
                         )}
-                        {!card.runId && col.id === "open" && (
+                        {!card.runId && col.id === "open" && card.repo && (
                           <button onClick={(e) => {
                               e.stopPropagation();
                               const issue = issues.find((i) => i.number === card.number);
-                              if (issue) launchIssue(issue);
+                              if (issue && card.repo) launchIssue(issue, card.repo);
                             }}
                             className="text-[#3fb950] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Run
