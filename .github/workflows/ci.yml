@@ -71,4 +71,4 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app
-        run: npm run tauri build -- --debug --bundles none
+        run: npm run tauri build -- --debug --no-bundle

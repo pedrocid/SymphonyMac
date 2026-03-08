@@ -33,7 +33,7 @@ export default defineConfig(async () => ({
   test: {
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
-    css: true,
+    css: false,
     restoreMocks: true,
   },
 }));

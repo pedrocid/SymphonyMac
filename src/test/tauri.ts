@@ -1,24 +1,38 @@
 import { vi } from "vitest";
 
 type EventCallback<T = unknown> = (event: { payload: T }) => void | Promise<void>;
+type InvokeImplementation = (
+  command: string,
+  args?: unknown,
+) => Promise<unknown>;
+type ListenImplementation = (
+  eventName: string,
+  callback: EventCallback,
+) => Promise<() => void>;
 
 const listeners = new Map<string, Set<EventCallback>>();
 
-export const invokeMock = vi.fn(
-  async (_command: string, _args?: unknown): Promise<unknown> => undefined,
-);
+const defaultInvokeImplementation: InvokeImplementation = async (
+  _command,
+  _args,
+) => undefined;
 
-export const listenMock = vi.fn(
-  async (eventName: string, callback: EventCallback) => {
-    const callbacks = listeners.get(eventName) ?? new Set<EventCallback>();
-    callbacks.add(callback);
-    listeners.set(eventName, callbacks);
+const defaultListenImplementation: ListenImplementation = async (
+  eventName,
+  callback,
+) => {
+  const callbacks = listeners.get(eventName) ?? new Set<EventCallback>();
+  callbacks.add(callback);
+  listeners.set(eventName, callbacks);
 
-    return () => {
-      listeners.get(eventName)?.delete(callback);
-    };
-  },
-);
+  return () => {
+    listeners.get(eventName)?.delete(callback);
+  };
+};
+
+export const invokeMock = vi.fn(defaultInvokeImplementation);
+
+export const listenMock = vi.fn(defaultListenImplementation);
 
 export async function emitTauriEvent<T>(eventName: string, payload: T) {
   for (const callback of listeners.get(eventName) ?? []) {
@@ -27,7 +41,9 @@ export async function emitTauriEvent<T>(eventName: string, payload: T) {
 }
 
 export function resetTauriMocks() {
-  invokeMock.mockReset();
-  listenMock.mockReset();
   listeners.clear();
+  invokeMock.mockReset();
+  invokeMock.mockImplementation(defaultInvokeImplementation);
+  listenMock.mockReset();
+  listenMock.mockImplementation(defaultListenImplementation);
 }

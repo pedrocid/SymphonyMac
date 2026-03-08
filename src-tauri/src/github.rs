@@ -281,7 +281,7 @@ fn parse_closes_issue(body: &str) -> Option<u64> {
         "resolve #",
     ] {
         if let Some(pos) = body_lower.find(keyword) {
-            let after = &body[pos + keyword.len()..];
+            let after = &body_lower[pos + keyword.len()..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 return Some(n);
@@ -306,7 +306,7 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
         "issue #",
     ] {
         if let Some(pos) = title_lower.find(keyword) {
-            let after = &title[pos + keyword.len()..];
+            let after = &title_lower[pos + keyword.len()..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 return Some(n);
@@ -314,9 +314,9 @@ pub fn parse_issue_from_title(title: &str) -> Option<u64> {
         }
     }
     // Try pattern "#123" anywhere
-    for (i, c) in title.chars().enumerate() {
-        if c == '#' {
-            let after = &title[i + 1..];
+    for (index, ch) in title.char_indices() {
+        if ch == '#' {
+            let after = &title[index + 1..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 if n > 0 {
@@ -533,5 +533,23 @@ mod tests {
         let text = "Blocked by #0";
         let blockers = parse_blockers(text);
         assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_closes_issue_unicode_prefix() {
+        let body = "Résumé update complete. Closes #42";
+        assert_eq!(parse_closes_issue(body), Some(42));
+    }
+
+    #[test]
+    fn test_parse_issue_from_title_unicode_prefix() {
+        let title = "🚀 Fix #91: Improve pipeline coverage";
+        assert_eq!(parse_issue_from_title(title), Some(91));
+    }
+
+    #[test]
+    fn test_parse_issue_from_title_unicode_before_hash() {
+        let title = "Résumé polish before landing #108";
+        assert_eq!(parse_issue_from_title(title), Some(108));
     }
 }
