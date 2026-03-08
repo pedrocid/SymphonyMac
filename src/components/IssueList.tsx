@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { OrchestratorOverview } from "../types/orchestrator";
 
 interface Issue {
   number: number;
@@ -12,23 +13,6 @@ interface Issue {
   created_at: string;
   updated_at: string;
   _repo: string;
-}
-
-interface OrchestratorStatus {
-  is_running: boolean;
-  repos: string[];
-  config: {
-    agent_type: string;
-    auto_approve: boolean;
-    max_concurrent: number;
-    poll_interval_secs: number;
-    issue_label: string | null;
-    max_turns: number;
-  };
-  runs: any[];
-  total_completed: number;
-  total_failed: number;
-  active_count: number;
 }
 
 export function IssueList({
@@ -73,7 +57,7 @@ export function IssueList({
 
   async function checkOrchestratorStatus() {
     try {
-      const status = await invoke<OrchestratorStatus>("get_status");
+      const status = await invoke<OrchestratorOverview>("get_status");
       setOrchestratorRunning(status.is_running);
     } catch (_) {}
   }

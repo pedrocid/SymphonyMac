@@ -1,25 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
-interface AgentRun {
-  id: string;
-  repo: string;
-  issue_number: number;
-  issue_title: string;
-  status: string;
-  stage: string;
-  started_at: string;
-  finished_at: string | null;
-  workspace_path: string;
-  error: string | null;
-  attempt: number;
-  max_retries: number;
-  logs: string[];
-  issue_labels: string[];
-  skipped_stages: string[];
-  pending_next_stage: string | null;
-}
+import type { OrchestratorOverview, RunSummary } from "../types/orchestrator";
 
 interface Issue {
   number: number;
@@ -32,20 +14,6 @@ interface Issue {
   created_at: string;
   updated_at: string;
   _repo?: string;
-}
-
-interface OrchestratorStatus {
-  is_running: boolean;
-  repos: string[];
-  runs: AgentRun[];
-  config: any;
-  total_completed: number;
-  total_failed: number;
-  active_count: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cost_usd: number;
-  total_runtime_secs: number;
 }
 
 type KanbanCard = {
@@ -76,7 +44,7 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: string) => void; onViewReport?: (runId: string) => void }) {
-  const [status, setStatus] = useState<OrchestratorStatus | null>(null);
+  const [status, setStatus] = useState<OrchestratorOverview | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [blockedMap, setBlockedMap] = useState<Map<string, number[]>>(new Map());
@@ -106,7 +74,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
   async function loadStatus() {
     try {
-      const result = await invoke<OrchestratorStatus>("get_status");
+      const result = await invoke<OrchestratorOverview>("get_status");
       setStatus(result);
       if (result.repos.length > 0) {
         try {
@@ -194,9 +162,9 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
   // For each issue, find the latest run (by started_at)
   // Use "repo:issue_number" as key to avoid cross-repo collisions
-  const latestRunByIssue = new Map<string, AgentRun>();
+  const latestRunByIssue = new Map<string, RunSummary>();
   // Also collect all runs per issue to find the "best" stage
-  const allRunsByIssue = new Map<string, AgentRun[]>();
+  const allRunsByIssue = new Map<string, RunSummary[]>();
   for (const run of status.runs) {
     const runKey = `${run.repo}:${run.issue_number}`;
     const existing = allRunsByIssue.get(runKey) || [];
@@ -220,7 +188,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const doneCards: KanbanCard[] = [];
   const failedCards: KanbanCard[] = [];
 
-  function makeCard(issue: Issue | null, run: AgentRun | null, repo?: string): KanbanCard {
+  function makeCard(issue: Issue | null, run: RunSummary | null, repo?: string): KanbanCard {
     // Collect skipped stages from all runs for this issue
     const issueNum = issue?.number || run?.issue_number || 0;
     const issueRepo = repo || run?.repo || issue?._repo || "";
