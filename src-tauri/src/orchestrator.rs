@@ -298,7 +298,7 @@ fn sort_issues_for_dispatch(issues: &mut [crate::github::Issue], priority_labels
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorStatus {
     pub is_running: bool,
-    pub repo: Option<String>,
+    pub repos: Vec<String>,
     pub runs: Vec<AgentRun>,
     pub config: RunConfig,
     pub total_completed: usize,
@@ -312,7 +312,7 @@ pub struct OrchestratorStatus {
 
 pub struct OrchestratorState {
     pub is_running: bool,
-    pub repo: Option<String>,
+    pub repos: Vec<String>,
     pub runs: HashMap<String, AgentRun>,
     pub config: RunConfig,
     pub agent_pids: HashMap<String, u32>,
@@ -344,7 +344,7 @@ impl OrchestratorState {
 
         Self {
             is_running: false,
-            repo: None,
+            repos: Vec::new(),
             runs: HashMap::new(),
             config: RunConfig::default(),
             agent_pids: HashMap::new(),
@@ -361,11 +361,11 @@ impl OrchestratorState {
         crate::persistence::save_state(self);
     }
 
-    /// Get the latest run for a given issue number
-    pub fn latest_run_for_issue(&self, issue_number: u64) -> Option<&AgentRun> {
+    /// Get the latest run for a given repo and issue number
+    pub fn latest_run_for_issue(&self, repo: &str, issue_number: u64) -> Option<&AgentRun> {
         self.runs
             .values()
-            .filter(|r| r.issue_number == issue_number)
+            .filter(|r| r.repo == repo && r.issue_number == issue_number)
             .max_by_key(|r| r.started_at.clone())
     }
 }
@@ -391,7 +391,7 @@ pub async fn get_status(
 
     Ok(OrchestratorStatus {
         is_running: s.is_running,
-        repo: s.repo.clone(),
+        repos: s.repos.clone(),
         runs,
         config: s.config.clone(),
         total_completed,
@@ -418,15 +418,19 @@ pub async fn update_config(
 pub async fn start_orchestrator(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
-    repo: String,
+    repos: Vec<String>,
 ) -> Result<(), String> {
+    if repos.is_empty() {
+        return Err("At least one repository must be selected".to_string());
+    }
+
     {
         let mut s = state.lock().await;
         if s.is_running {
             return Err("Orchestrator already running".to_string());
         }
         s.is_running = true;
-        s.repo = Some(repo.clone());
+        s.repos = repos.clone();
         s.stop_flag = false;
     }
 
@@ -434,7 +438,7 @@ pub async fn start_orchestrator(
         "orchestrator-status",
         serde_json::json!({
             "running": true,
-            "repo": &repo,
+            "repos": &repos,
         }),
     );
 
@@ -442,7 +446,7 @@ pub async fn start_orchestrator(
     let app_clone = app.clone();
 
     tokio::spawn(async move {
-        poll_loop(app_clone, state_clone, repo).await;
+        poll_loop(app_clone, state_clone, repos).await;
     });
 
     Ok(())
@@ -595,14 +599,14 @@ pub async fn resume_pipeline(
 
 /// Reconcile active runs against current GitHub issue state.
 /// Stops agents for issues that have been closed externally.
-async fn reconcile_active_runs(app: &AppHandle, state: &SharedState, repo: &str) {
+async fn reconcile_active_runs(app: &AppHandle, state: &SharedState) {
     // Collect active runs' info while holding the lock briefly
-    let active_runs: Vec<(String, u64)> = {
+    let active_runs: Vec<(String, u64, String)> = {
         let s = state.lock().await;
         s.runs
             .values()
             .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-            .map(|r| (r.id.clone(), r.issue_number))
+            .map(|r| (r.id.clone(), r.issue_number, r.repo.clone()))
             .collect()
     };
 
@@ -610,16 +614,17 @@ async fn reconcile_active_runs(app: &AppHandle, state: &SharedState, repo: &str)
         return;
     }
 
-    // Deduplicate issue numbers to avoid redundant API calls
-    let mut checked_issues: std::collections::HashMap<u64, bool> =
+    // Deduplicate (repo, issue_number) pairs to avoid redundant API calls
+    let mut checked_issues: std::collections::HashMap<(String, u64), bool> =
         std::collections::HashMap::new();
 
-    for (run_id, issue_number) in &active_runs {
-        let is_open = if let Some(&cached) = checked_issues.get(issue_number) {
+    for (run_id, issue_number, repo) in &active_runs {
+        let cache_key = (repo.clone(), *issue_number);
+        let is_open = if let Some(&cached) = checked_issues.get(&cache_key) {
             cached
         } else {
             let open = github::is_issue_open(repo, *issue_number).unwrap_or(true);
-            checked_issues.insert(*issue_number, open);
+            checked_issues.insert(cache_key, open);
             open
         };
 
@@ -671,7 +676,7 @@ async fn reconcile_active_runs(app: &AppHandle, state: &SharedState, repo: &str)
     }
 }
 
-async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
+async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
     let mut all_processed_notified = false;
 
     loop {
@@ -693,7 +698,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         }
 
         // ---- RECONCILIATION: Stop agents for externally-closed issues ----
-        reconcile_active_runs(&app, &state, &repo).await;
+        reconcile_active_runs(&app, &state).await;
 
         let _ = app.emit(
             "orchestrator-poll",
@@ -702,44 +707,67 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             }),
         );
 
-        // ---- STEP 1: Fetch issues and PRs in parallel ----
-        let mut issues = match github::list_issues(
-            repo.clone(),
-            Some("open".to_string()),
-            label.clone(),
-        )
-        .await
-        {
-            Ok(issues) => issues,
-            Err(e) => {
-                let _ = app.emit(
-                    "orchestrator-error",
-                    serde_json::json!({
-                        "error": format!("Failed to fetch issues: {}", e),
-                    }),
-                );
-                tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
-                continue;
-            }
-        };
-
-        // Sort issues by priority labels, then created_at (oldest first), then issue number
-        sort_issues_for_dispatch(&mut issues, &priority_labels);
-
-        let open_prs = github::list_open_prs(repo.clone())
-            .await
-            .unwrap_or_default();
-
-        // Build a map: issue_number -> PR exists
-        let mut issues_with_pr: std::collections::HashMap<u64, &github::PullRequest> =
+        // ---- STEP 1: Fetch issues and PRs from ALL repos ----
+        // Each issue is tagged with its repo for dispatch
+        let mut all_issues: Vec<(String, github::Issue)> = Vec::new();
+        let mut all_issues_with_pr: std::collections::HashMap<(String, u64), github::PullRequest> =
             std::collections::HashMap::new();
-        for pr in &open_prs {
-            let issue_num = pr
-                .closes_issue
-                .or_else(|| github::parse_issue_from_title(&pr.title));
-            if let Some(n) = issue_num {
-                issues_with_pr.insert(n, pr);
+        let mut had_fetch_error = false;
+
+        for repo in &repos {
+            let issues = match github::list_issues(
+                repo.clone(),
+                Some("open".to_string()),
+                label.clone(),
+            )
+            .await
+            {
+                Ok(issues) => issues,
+                Err(e) => {
+                    let _ = app.emit(
+                        "orchestrator-error",
+                        serde_json::json!({
+                            "error": format!("Failed to fetch issues from {}: {}", repo, e),
+                        }),
+                    );
+                    had_fetch_error = true;
+                    continue;
+                }
+            };
+
+            for issue in issues {
+                all_issues.push((repo.clone(), issue));
             }
+
+            let open_prs = github::list_open_prs(repo.clone())
+                .await
+                .unwrap_or_default();
+            for pr in open_prs {
+                let issue_num = pr
+                    .closes_issue
+                    .or_else(|| github::parse_issue_from_title(&pr.title));
+                if let Some(n) = issue_num {
+                    all_issues_with_pr.insert((repo.clone(), n), pr);
+                }
+            }
+        }
+
+        if all_issues.is_empty() && had_fetch_error {
+            tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
+            continue;
+        }
+
+        // Sort all issues across repos by priority labels, then created_at (oldest first), then issue number
+        {
+            let pl = &priority_labels;
+            all_issues.sort_by(|(_, a), (_, b)| {
+                let rank_a = issue_priority_rank(a, pl);
+                let rank_b = issue_priority_rank(b, pl);
+                rank_a
+                    .cmp(&rank_b)
+                    .then_with(|| a.created_at.cmp(&b.created_at))
+                    .then_with(|| a.number.cmp(&b.number))
+            });
         }
 
         // ---- STEP 2: Determine available slots ----
@@ -764,32 +792,34 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         }
 
         // ---- STEP 3: Filter issues that need work ----
+        // Use (repo, issue_number) tuples to avoid cross-repo collisions
         let (already_working, fully_done, has_any_run) = {
             let s = state.lock().await;
-            let working: Vec<u64> = s
+            let working: Vec<(String, u64)> = s
                 .runs
                 .values()
                 .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-                .map(|r| r.issue_number)
+                .map(|r| (r.repo.clone(), r.issue_number))
                 .collect();
-            let done: Vec<u64> = s
+            let done: Vec<(String, u64)> = s
                 .runs
                 .values()
                 .filter(|r| r.stage == PipelineStage::Done && r.status == AgentStatus::Completed)
-                .map(|r| r.issue_number)
+                .map(|r| (r.repo.clone(), r.issue_number))
                 .collect();
-            let any: Vec<u64> = s.runs.values().map(|r| r.issue_number).collect();
+            let any: Vec<(String, u64)> = s.runs.values().map(|r| (r.repo.clone(), r.issue_number)).collect();
             (working, done, any)
         };
 
         // ---- Check if all issues are processed ----
         {
             let s = state.lock().await;
-            let all_done = !issues.is_empty()
-                && issues.iter().all(|issue| {
-                    already_working.contains(&issue.number)
-                        || fully_done.contains(&issue.number)
-                        || has_any_run.contains(&issue.number)
+            let all_done = !all_issues.is_empty()
+                && all_issues.iter().all(|(repo, issue)| {
+                    let key = (repo.clone(), issue.number);
+                    already_working.contains(&key)
+                        || fully_done.contains(&key)
+                        || has_any_run.contains(&key)
                 });
             let no_active = active_count == 0;
             if all_done && no_active && !all_processed_notified {
@@ -804,18 +834,20 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
 
         // ---- STEP 4: Dispatch issues ----
         let mut used_slots = 0usize;
-        let mut blocked_issues: Vec<(u64, Vec<u64>)> = Vec::new();
+        let mut blocked_issues: Vec<(String, u64, Vec<u64>)> = Vec::new();
         let mut stage_slots_used: HashMap<String, usize> = HashMap::new();
 
-        for issue in &issues {
+        for (repo, issue) in &all_issues {
             if used_slots >= available_slots {
                 break;
             }
 
+            let key = (repo.clone(), issue.number);
+
             // Skip already active, fully done, or already has a run
-            if already_working.contains(&issue.number)
-                || fully_done.contains(&issue.number)
-                || has_any_run.contains(&issue.number)
+            if already_working.contains(&key)
+                || fully_done.contains(&key)
+                || has_any_run.contains(&key)
             {
                 continue;
             }
@@ -824,9 +856,9 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             let body_text = issue.body.as_deref().unwrap_or("");
             let blocker_nums = github::parse_blockers(body_text);
             if !blocker_nums.is_empty() {
-                let open_blockers = github::check_blockers_open(&repo, &blocker_nums);
+                let open_blockers = github::check_blockers_open(repo, &blocker_nums);
                 if !open_blockers.is_empty() {
-                    blocked_issues.push((issue.number, open_blockers.clone()));
+                    blocked_issues.push((repo.clone(), issue.number, open_blockers.clone()));
                     let _ = app.emit(
                         "orchestrator-blocked",
                         serde_json::json!({
@@ -842,7 +874,8 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             let skipped = compute_skipped_stages(&issue.labels, &skip_labels);
 
             // Decide which stage to start at
-            let (stage, title, body) = if let Some(pr) = issues_with_pr.get(&issue.number) {
+            let pr_key = (repo.clone(), issue.number);
+            let (stage, title, body) = if let Some(pr) = all_issues_with_pr.get(&pr_key) {
                 // This issue already has a PR → start at Code Review (or next non-skipped)
                 let mut start = PipelineStage::CodeReview;
                 if skipped.contains(&start) {
@@ -888,7 +921,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
             .await
             {
                 let _ = app.emit("orchestrator-error", serde_json::json!({
-                    "error": format!("Failed to launch {} agent for #{}: {}", stage, issue.number, e),
+                    "error": format!("Failed to launch {} agent for {}#{}: {}", stage, repo, issue.number, e),
                 }));
             } else {
                 used_slots += 1;
@@ -901,8 +934,9 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         let _ = app.emit(
             "orchestrator-blocked-list",
             serde_json::json!({
-                "blocked": blocked_issues.iter().map(|(num, blockers)| {
+                "blocked": blocked_issues.iter().map(|(repo, num, blockers)| {
                     serde_json::json!({
+                        "repo": repo,
                         "issue_number": num,
                         "blocked_by": blockers,
                     })

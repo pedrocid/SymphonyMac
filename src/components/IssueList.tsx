@@ -11,11 +11,12 @@ interface Issue {
   url: string;
   created_at: string;
   updated_at: string;
+  _repo: string;
 }
 
 interface OrchestratorStatus {
   is_running: boolean;
-  repo: string | null;
+  repos: string[];
   config: {
     agent_type: string;
     auto_approve: boolean;
@@ -31,34 +32,38 @@ interface OrchestratorStatus {
 }
 
 export function IssueList({
-  repo,
+  repos,
   onRunStarted,
 }: {
-  repo: string;
+  repos: string[];
   onRunStarted: () => void;
 }) {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedIssues, setSelectedIssues] = useState<Set<number>>(new Set());
+  const [selectedIssues, setSelectedIssues] = useState<Set<string>>(new Set());
   const [launching, setLaunching] = useState(false);
   const [orchestratorRunning, setOrchestratorRunning] = useState(false);
 
   useEffect(() => {
     loadIssues();
     checkOrchestratorStatus();
-  }, [repo]);
+  }, [repos]);
 
   async function loadIssues() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<Issue[]>("list_issues", {
-        repo,
-        state: "open",
-        label: null,
-      });
-      setIssues(result);
+      const allIssues: Issue[] = [];
+      for (const repo of repos) {
+        const result = await invoke<Omit<Issue, "_repo">[]>("list_issues", {
+          repo,
+          state: "open",
+          label: null,
+        });
+        allIssues.push(...result.map((i) => ({ ...i, _repo: repo })));
+      }
+      setIssues(allIssues);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -73,13 +78,19 @@ export function IssueList({
     } catch (_) {}
   }
 
-  function toggleIssue(number: number) {
+  // Use "repo:number" as unique key for selection
+  function issueKey(issue: Issue): string {
+    return `${issue._repo}:${issue.number}`;
+  }
+
+  function toggleIssue(issue: Issue) {
+    const key = issueKey(issue);
     setSelectedIssues((prev) => {
       const next = new Set(prev);
-      if (next.has(number)) {
-        next.delete(number);
+      if (next.has(key)) {
+        next.delete(key);
       } else {
-        next.add(number);
+        next.add(key);
       }
       return next;
     });
@@ -89,16 +100,16 @@ export function IssueList({
     if (selectedIssues.size === issues.length) {
       setSelectedIssues(new Set());
     } else {
-      setSelectedIssues(new Set(issues.map((i) => i.number)));
+      setSelectedIssues(new Set(issues.map(issueKey)));
     }
   }
 
   async function launchSelected() {
     setLaunching(true);
     try {
-      for (const issue of issues.filter((i) => selectedIssues.has(i.number))) {
+      for (const issue of issues.filter((i) => selectedIssues.has(issueKey(i)))) {
         await invoke("start_single_issue", {
-          repo,
+          repo: issue._repo,
           issueNumber: issue.number,
           issueTitle: issue.title,
           issueBody: issue.body,
@@ -115,7 +126,7 @@ export function IssueList({
 
   async function startOrchestrator() {
     try {
-      await invoke("start_orchestrator", { repo });
+      await invoke("start_orchestrator", { repos });
       setOrchestratorRunning(true);
       onRunStarted();
     } catch (e) {
@@ -139,6 +150,8 @@ export function IssueList({
     documentation: "bg-[#d2992226] text-[#d29922] border-[#d29922]",
   };
 
+  const showRepoName = repos.length > 1;
+
   return (
     <div className="flex-1 overflow-auto flex flex-col">
       {/* Header */}
@@ -146,7 +159,7 @@ export function IssueList({
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-2xl font-bold text-[#e6edf3]">Issues</h2>
-            <p className="text-[#8b949e] text-sm">{repo}</p>
+            <p className="text-[#8b949e] text-sm">{repos.join(", ")}</p>
           </div>
           <div className="flex gap-2">
             {orchestratorRunning ? (
@@ -214,10 +227,10 @@ export function IssueList({
           <div className="space-y-2">
             {issues.map((issue) => (
               <div
-                key={issue.number}
-                onClick={() => toggleIssue(issue.number)}
+                key={issueKey(issue)}
+                onClick={() => toggleIssue(issue)}
                 className={`p-4 rounded-lg border cursor-pointer transition-colors ${
-                  selectedIssues.has(issue.number)
+                  selectedIssues.has(issueKey(issue))
                     ? "bg-[#58a6ff15] border-[#58a6ff]"
                     : "bg-[#161b22] border-[#30363d] hover:border-[#484f58]"
                 }`}
@@ -225,12 +238,15 @@ export function IssueList({
                 <div className="flex items-start gap-3">
                   <input
                     type="checkbox"
-                    checked={selectedIssues.has(issue.number)}
+                    checked={selectedIssues.has(issueKey(issue))}
                     onChange={() => {}}
                     className="mt-1 accent-[#58a6ff]"
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
+                      {showRepoName && (
+                        <span className="text-[#8b949e] text-xs">{issue._repo.split("/").pop()}</span>
+                      )}
                       <span className="text-[#8b949e] text-sm">#{issue.number}</span>
                       <span className="text-[#e6edf3] font-medium">{issue.title}</span>
                     </div>
@@ -262,7 +278,7 @@ export function IssueList({
                     onClick={(e) => {
                       e.stopPropagation();
                       invoke("start_single_issue", {
-                        repo,
+                        repo: issue._repo,
                         issueNumber: issue.number,
                         issueTitle: issue.title,
                         issueBody: issue.body,

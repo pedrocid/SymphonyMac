@@ -11,7 +11,15 @@ interface Repo {
   is_private: boolean;
 }
 
-export function RepoSelector({ onSelect }: { onSelect: (repo: string) => void }) {
+export function RepoSelector({
+  selectedRepos,
+  onToggleRepo,
+  onConfirm,
+}: {
+  selectedRepos: string[];
+  onToggleRepo: (repo: string) => void;
+  onConfirm: () => void;
+}) {
   const [repos, setRepos] = useState<Repo[]>([]);
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
@@ -41,18 +49,28 @@ export function RepoSelector({ onSelect }: { onSelect: (repo: string) => void })
   return (
     <div className="flex-1 overflow-auto p-6">
       <div className="max-w-3xl mx-auto">
-        <h2 className="text-2xl font-bold text-[#e6edf3] mb-2">Select Repository</h2>
+        <h2 className="text-2xl font-bold text-[#e6edf3] mb-2">Select Repositories</h2>
         <p className="text-[#8b949e] mb-6">
-          Choose a repository to orchestrate agent work on its issues.
+          Choose one or more repositories to orchestrate agent work on their issues.
         </p>
 
-        <input
-          type="text"
-          placeholder="Filter repositories..."
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="w-full px-4 py-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-[#e6edf3] placeholder-[#484f58] mb-4 outline-none focus:border-[#58a6ff] transition-colors"
-        />
+        <div className="flex items-center gap-3 mb-4">
+          <input
+            type="text"
+            placeholder="Filter repositories..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="flex-1 px-4 py-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-[#e6edf3] placeholder-[#484f58] outline-none focus:border-[#58a6ff] transition-colors"
+          />
+          {selectedRepos.length > 0 && (
+            <button
+              onClick={onConfirm}
+              className="px-4 py-2 bg-[#238636] text-white rounded-lg text-sm font-medium hover:bg-[#2ea043] transition-colors shrink-0"
+            >
+              Continue with {selectedRepos.length} repo{selectedRepos.length > 1 ? "s" : ""}
+            </button>
+          )}
+        </div>
 
         {loading && (
           <div className="text-center py-12 text-[#8b949e]">
@@ -73,34 +91,46 @@ export function RepoSelector({ onSelect }: { onSelect: (repo: string) => void })
         )}
 
         <div className="space-y-2">
-          {filtered.map((repo) => (
-            <button
-              key={repo.full_name}
-              onClick={() => onSelect(repo.full_name)}
-              className="w-full text-left p-4 bg-[#161b22] border border-[#30363d] rounded-lg hover:border-[#58a6ff] transition-colors group"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[#58a6ff] font-medium">{repo.full_name}</span>
-                    {repo.is_private && (
-                      <span className="text-xs px-2 py-0.5 rounded-full border border-[#30363d] text-[#8b949e]">
-                        Private
-                      </span>
-                    )}
+          {filtered.map((repo) => {
+            const isSelected = selectedRepos.includes(repo.full_name);
+            return (
+              <button
+                key={repo.full_name}
+                onClick={() => onToggleRepo(repo.full_name)}
+                className={`w-full text-left p-4 border rounded-lg transition-colors group ${
+                  isSelected
+                    ? "bg-[#58a6ff15] border-[#58a6ff]"
+                    : "bg-[#161b22] border-[#30363d] hover:border-[#58a6ff]"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {}}
+                      className="accent-[#58a6ff] shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#58a6ff] font-medium">{repo.full_name}</span>
+                        {repo.is_private && (
+                          <span className="text-xs px-2 py-0.5 rounded-full border border-[#30363d] text-[#8b949e]">
+                            Private
+                          </span>
+                        )}
+                      </div>
+                      {repo.description && (
+                        <p className="text-sm text-[#8b949e] mt-1 truncate">
+                          {repo.description}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  {repo.description && (
-                    <p className="text-sm text-[#8b949e] mt-1 truncate">
-                      {repo.description}
-                    </p>
-                  )}
                 </div>
-                <span className="text-[#8b949e] group-hover:text-[#58a6ff] transition-colors ml-4">
-                  &rarr;
-                </span>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
 
         {!loading && filtered.length === 0 && !error && (

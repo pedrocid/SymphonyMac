@@ -44,7 +44,7 @@ export interface RunConfig {
 
 function App() {
   const [view, setView] = useState<View>("repos");
-  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [reportRunId, setReportRunId] = useState<string | null>(null);
 
@@ -71,7 +71,7 @@ function App() {
             active={view === "issues"}
             onClick={() => setView("issues")}
             icon="&#128196;"
-            disabled={!selectedRepo}
+            disabled={selectedRepos.length === 0}
           />
           <NavItem
             label="Dashboard"
@@ -93,10 +93,12 @@ function App() {
           />
         </nav>
 
-        {selectedRepo && (
+        {selectedRepos.length > 0 && (
           <div className="p-3 border-t border-[#30363d]">
-            <p className="text-xs text-[#8b949e]">Active repo</p>
-            <p className="text-sm text-[#58a6ff] truncate">{selectedRepo}</p>
+            <p className="text-xs text-[#8b949e]">Active repos ({selectedRepos.length})</p>
+            {selectedRepos.map((repo) => (
+              <p key={repo} className="text-sm text-[#58a6ff] truncate">{repo}</p>
+            ))}
           </div>
         )}
       </div>
@@ -105,15 +107,20 @@ function App() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {view === "repos" && (
           <RepoSelector
-            onSelect={(repo) => {
-              setSelectedRepo(repo);
-              setView("issues");
+            selectedRepos={selectedRepos}
+            onToggleRepo={(repo) => {
+              setSelectedRepos((prev) =>
+                prev.includes(repo)
+                  ? prev.filter((r) => r !== repo)
+                  : [...prev, repo]
+              );
             }}
+            onConfirm={() => setView("issues")}
           />
         )}
-        {view === "issues" && selectedRepo && (
+        {view === "issues" && selectedRepos.length > 0 && (
           <IssueList
-            repo={selectedRepo}
+            repos={selectedRepos}
             onRunStarted={() => setView("dashboard")}
           />
         )}

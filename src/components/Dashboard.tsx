@@ -30,11 +30,12 @@ interface Issue {
   url: string;
   created_at: string;
   updated_at: string;
+  _repo?: string;
 }
 
 interface OrchestratorStatus {
   is_running: boolean;
-  repo: string | null;
+  repos: string[];
   runs: AgentRun[];
   config: any;
   total_completed: number;
@@ -48,6 +49,7 @@ interface OrchestratorStatus {
 
 type KanbanCard = {
   id: string;
+  repo?: string;
   number: number;
   title: string;
   labels: string[];
@@ -75,19 +77,19 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const [status, setStatus] = useState<OrchestratorStatus | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [blockedMap, setBlockedMap] = useState<Map<number, number[]>>(new Map());
+  const [blockedMap, setBlockedMap] = useState<Map<string, number[]>>(new Map());
 
   useEffect(() => {
     loadStatus();
     const interval = setInterval(loadStatus, 3000);
     const unlistenStatus = listen("agent-status-changed", () => loadStatus());
     const unlistenOrch = listen("orchestrator-status", () => loadStatus());
-    const unlistenBlocked = listen<{ blocked: { issue_number: number; blocked_by: number[] }[] }>(
+    const unlistenBlocked = listen<{ blocked: { repo: string; issue_number: number; blocked_by: number[] }[] }>(
       "orchestrator-blocked-list",
       (event) => {
-        const newMap = new Map<number, number[]>();
+        const newMap = new Map<string, number[]>();
         for (const entry of event.payload.blocked) {
-          newMap.set(entry.issue_number, entry.blocked_by);
+          newMap.set(`${entry.repo}:${entry.issue_number}`, entry.blocked_by);
         }
         setBlockedMap(newMap);
       }
@@ -104,12 +106,16 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try {
       const result = await invoke<OrchestratorStatus>("get_status");
       setStatus(result);
-      if (result.repo) {
+      if (result.repos.length > 0) {
         try {
-          const allIssues = await invoke<Issue[]>("list_issues", {
-            repo: result.repo, state: "all", label: null,
-          });
-          setIssues(allIssues);
+          const allRepoIssues: Issue[] = [];
+          for (const repo of result.repos) {
+            const repoIssues = await invoke<Issue[]>("list_issues", {
+              repo, state: "all", label: null,
+            });
+            allRepoIssues.push(...repoIssues.map((i) => ({ ...i, _repo: repo })));
+          }
+          setIssues(allRepoIssues);
         } catch (_) {}
       }
     } catch (e) {
@@ -129,11 +135,10 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try { await invoke("retry_agent", { runId }); loadStatus(); } catch (e) { setError(String(e)); }
   }
 
-  async function launchIssue(issue: Issue) {
-    if (!status?.repo) return;
+  async function launchIssue(issue: Issue, repo: string) {
     try {
       await invoke("start_single_issue", {
-        repo: status.repo, issueNumber: issue.number,
+        repo, issueNumber: issue.number,
         issueTitle: issue.title, issueBody: issue.body,
         issueLabels: issue.labels,
       });
@@ -174,17 +179,19 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   }
 
   // For each issue, find the latest run (by started_at)
-  const latestRunByIssue = new Map<number, AgentRun>();
+  // Use "repo:issue_number" as key to avoid cross-repo collisions
+  const latestRunByIssue = new Map<string, AgentRun>();
   // Also collect all runs per issue to find the "best" stage
-  const allRunsByIssue = new Map<number, AgentRun[]>();
+  const allRunsByIssue = new Map<string, AgentRun[]>();
   for (const run of status.runs) {
-    const existing = allRunsByIssue.get(run.issue_number) || [];
+    const runKey = `${run.repo}:${run.issue_number}`;
+    const existing = allRunsByIssue.get(runKey) || [];
     existing.push(run);
-    allRunsByIssue.set(run.issue_number, existing);
+    allRunsByIssue.set(runKey, existing);
 
-    const current = latestRunByIssue.get(run.issue_number);
+    const current = latestRunByIssue.get(runKey);
     if (!current || new Date(run.started_at) > new Date(current.started_at)) {
-      latestRunByIssue.set(run.issue_number, run);
+      latestRunByIssue.set(runKey, run);
     }
   }
 
@@ -198,16 +205,19 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const doneCards: KanbanCard[] = [];
   const failedCards: KanbanCard[] = [];
 
-  function makeCard(issue: Issue | null, run: AgentRun | null): KanbanCard {
+  function makeCard(issue: Issue | null, run: AgentRun | null, repo?: string): KanbanCard {
     // Collect skipped stages from all runs for this issue
     const issueNum = issue?.number || run?.issue_number || 0;
-    const allIssueRuns = allRunsByIssue.get(issueNum) || [];
+    const issueRepo = repo || run?.repo || issue?._repo || "";
+    const issueKey = `${issueRepo}:${issueNum}`;
+    const allIssueRuns = allRunsByIssue.get(issueKey) || [];
     const skipped = run?.skipped_stages?.length
       ? run.skipped_stages
       : allIssueRuns.find((r) => r.skipped_stages?.length)?.skipped_stages || [];
 
     return {
-      id: run?.id || `issue-${issue?.number}`,
+      id: run?.id || `issue-${repo || issue?._repo}-${issue?.number}`,
+      repo: repo || run?.repo,
       number: issueNum,
       title: issue?.title || run?.issue_title || "",
       labels: issue?.labels || [],
@@ -224,14 +234,16 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     };
   }
 
-  // Track which issues we've processed
-  const processedIssues = new Set<number>();
+  // Track which issues we've processed (using "repo:number" keys)
+  const processedIssues = new Set<string>();
 
   // First: process all issues that have runs
-  for (const [issueNum, runs] of allRunsByIssue.entries()) {
-    processedIssues.add(issueNum);
-    const issue = issues.find((i) => i.number === issueNum) || null;
-    const latestRun = latestRunByIssue.get(issueNum)!;
+  for (const [issueKey, runs] of allRunsByIssue.entries()) {
+    processedIssues.add(issueKey);
+    const [runRepo] = issueKey.split(":");
+    const issueNum = parseInt(issueKey.split(":").slice(1).join(":"));
+    const issue = issues.find((i) => i.number === issueNum && i._repo === runRepo) || null;
+    const latestRun = latestRunByIssue.get(issueKey)!;
     const card = makeCard(issue, latestRun);
 
     // Check if there's a "done" stage
@@ -271,16 +283,17 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
   // Then: issues without any runs
   for (const issue of issues) {
-    if (processedIssues.has(issue.number)) continue;
+    const ik = `${issue._repo}:${issue.number}`;
+    if (processedIssues.has(ik)) continue;
     if (issue.state === "OPEN") {
-      const blockers = blockedMap.get(issue.number);
+      const blockers = blockedMap.get(ik);
       if (blockers && blockers.length > 0) {
-        blockedCards.push({ ...makeCard(issue, null), blockedBy: blockers });
+        blockedCards.push({ ...makeCard(issue, null, issue._repo), blockedBy: blockers });
       } else {
-        openCards.push(makeCard(issue, null));
+        openCards.push(makeCard(issue, null, issue._repo));
       }
     } else {
-      doneCards.push(makeCard(issue, null));
+      doneCards.push(makeCard(issue, null, issue._repo));
     }
   }
 
@@ -300,7 +313,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       {/* Top bar */}
       <div className="px-6 py-4 border-b border-[#30363d] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
-          <h2 className="text-lg font-semibold text-[#e6edf3]">{status.repo || "Symphony"}</h2>
+          <h2 className="text-lg font-semibold text-[#e6edf3]">{status.repos.length > 0 ? status.repos.join(", ") : "Symphony"}</h2>
           <span className="text-xs text-[#8b949e] border border-[#30363d] rounded px-2 py-0.5">Board</span>
         </div>
         <div className="flex items-center gap-3">
@@ -384,7 +397,12 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                     className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 hover:border-[#484f58] transition-colors cursor-pointer group"
                     onClick={() => card.runId && onViewLogs(card.runId)}
                   >
-                    <div className="text-xs text-[#484f58] mb-1">#{card.number}</div>
+                    <div className="text-xs text-[#484f58] mb-1">
+                      {card.repo && status && status.repos.length > 1 && (
+                        <span className="text-[#8b949e] mr-1">{card.repo.split("/").pop()}</span>
+                      )}
+                      #{card.number}
+                    </div>
                     <div className="text-sm text-[#e6edf3] font-medium mb-2 leading-snug">{card.title}</div>
 
                     {/* Running indicator with stage */}
@@ -477,11 +495,11 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                             Retry
                           </button>
                         )}
-                        {!card.runId && col.id === "open" && (
+                        {!card.runId && col.id === "open" && card.repo && (
                           <button onClick={(e) => {
                               e.stopPropagation();
-                              const issue = issues.find((i) => i.number === card.number);
-                              if (issue) launchIssue(issue);
+                              const issue = issues.find((i) => i.number === card.number && i._repo === card.repo);
+                              if (issue && card.repo) launchIssue(issue, card.repo);
                             }}
                             className="text-[#3fb950] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">
                             Run
