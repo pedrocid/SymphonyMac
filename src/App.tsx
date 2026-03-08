@@ -10,39 +10,6 @@ import { PipelineReportView } from "./components/PipelineReportView";
 
 export type View = "repos" | "issues" | "dashboard" | "agents" | "settings";
 
-export interface LifecycleHooks {
-  after_create: string | null;
-  before_run: string | null;
-  after_run: string | null;
-  before_remove: string | null;
-  timeout_secs: number;
-}
-
-export interface RunConfig {
-  agent_type: string;
-  auto_approve: boolean;
-  max_concurrent: number;
-  poll_interval_secs: number;
-  issue_label: string | null;
-  max_turns: number;
-  notifications_enabled: boolean;
-  notification_sound: boolean;
-  max_retries: number;
-  retry_backoff_secs: number;
-  retry_base_delay_secs: number;
-  retry_max_backoff_secs: number;
-  cleanup_on_failure: boolean;
-  cleanup_on_stop: boolean;
-  workspace_ttl_days: number;
-  max_concurrent_by_stage: Record<string, number>;
-  stage_prompts: Record<string, string>;
-  hooks: LifecycleHooks;
-  priority_labels: string[];
-  stall_timeout_secs: number;
-  stage_skip_labels: Record<string, string[]>;
-  approval_gates: Record<string, boolean>;
-}
-
 function App() {
   const [view, setView] = useState<View>("repos");
   const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
