@@ -11,6 +11,14 @@ interface WorkspaceInfo {
   age_days: number;
 }
 
+const STAGE_KEYS = ["implement", "code_review", "testing", "merge"] as const;
+const STAGE_LABELS: Record<string, string> = {
+  implement: "Implement",
+  code_review: "Code Review",
+  testing: "Testing",
+  merge: "Merge",
+};
+
 export function Settings() {
   const [config, setConfig] = useState<RunConfig>({
     agent_type: "claude",
@@ -27,17 +35,28 @@ export function Settings() {
     cleanup_on_stop: false,
     workspace_ttl_days: 7,
     max_concurrent_by_stage: {},
+    stage_prompts: {},
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [wsLoading, setWsLoading] = useState(false);
   const [wsMessage, setWsMessage] = useState<string | null>(null);
+  const [defaultPrompts, setDefaultPrompts] = useState<Record<string, string>>({});
+  const [expandedStage, setExpandedStage] = useState<string | null>(null);
 
   useEffect(() => {
     loadConfig();
     loadWorkspaces();
+    loadDefaultPrompts();
   }, []);
+
+  async function loadDefaultPrompts() {
+    try {
+      const defaults = await invoke<Record<string, string>>("get_default_prompts");
+      setDefaultPrompts(defaults);
+    } catch (_) {}
+  }
 
   async function loadConfig() {
     try {
@@ -447,6 +466,73 @@ export function Settings() {
                   />
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Prompt Templates */}
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+            <h3 className="text-sm font-medium text-[#e6edf3] mb-2">Prompt Templates</h3>
+            <p className="text-xs text-[#8b949e] mb-4">
+              Customize the prompt sent to agents at each pipeline stage. Use template variables:{" "}
+              <code className="text-[#7ee787]">{"{{issue_number}}"}</code>,{" "}
+              <code className="text-[#7ee787]">{"{{issue_title}}"}</code>,{" "}
+              <code className="text-[#7ee787]">{"{{issue_body}}"}</code>,{" "}
+              <code className="text-[#7ee787]">{"{{repo}}"}</code>,{" "}
+              <code className="text-[#7ee787]">{"{{attempt}}"}</code>,{" "}
+              <code className="text-[#7ee787]">{"{{previous_error}}"}</code>
+            </p>
+
+            <div className="space-y-2">
+              {STAGE_KEYS.map((stage) => {
+                const isExpanded = expandedStage === stage;
+                const hasCustom = !!(config.stage_prompts[stage] && config.stage_prompts[stage].trim());
+                return (
+                  <div key={stage} className="border border-[#30363d] rounded-lg overflow-hidden">
+                    <button
+                      onClick={() => setExpandedStage(isExpanded ? null : stage)}
+                      className="w-full flex items-center justify-between px-4 py-3 bg-[#0d1117] hover:bg-[#161b22] transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-[#e6edf3]">{STAGE_LABELS[stage]}</span>
+                        {hasCustom && (
+                          <span className="px-1.5 py-0.5 text-[10px] bg-[#58a6ff20] text-[#58a6ff] rounded">
+                            Custom
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[#8b949e] text-xs">{isExpanded ? "▲" : "▼"}</span>
+                    </button>
+                    {isExpanded && (
+                      <div className="p-4 bg-[#0d1117] border-t border-[#30363d]">
+                        <textarea
+                          value={config.stage_prompts[stage] ?? defaultPrompts[stage] ?? ""}
+                          onChange={(e) =>
+                            setConfig({
+                              ...config,
+                              stage_prompts: { ...config.stage_prompts, [stage]: e.target.value },
+                            })
+                          }
+                          rows={12}
+                          className="w-full px-3 py-2 bg-[#161b22] border border-[#30363d] rounded-md text-[#e6edf3] text-xs font-mono outline-none focus:border-[#58a6ff] resize-y leading-relaxed"
+                          placeholder={defaultPrompts[stage] ?? ""}
+                        />
+                        <div className="flex justify-end mt-2">
+                          <button
+                            onClick={() => {
+                              const updated = { ...config.stage_prompts };
+                              delete updated[stage];
+                              setConfig({ ...config, stage_prompts: updated });
+                            }}
+                            className="px-3 py-1.5 text-xs text-[#d29922] bg-[#21262d] border border-[#30363d] rounded-md hover:bg-[#30363d] transition-colors"
+                          >
+                            Reset to Default
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 

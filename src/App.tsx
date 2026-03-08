@@ -25,6 +25,7 @@ export interface RunConfig {
   cleanup_on_stop: boolean;
   workspace_ttl_days: number;
   max_concurrent_by_stage: Record<string, number>;
+  stage_prompts: Record<string, string>;
 }
 
 function App() {
