@@ -6,9 +6,11 @@ use crate::SharedState;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,6 +486,7 @@ pub async fn launch_agent(
         input_tokens: 0,
         output_tokens: 0,
         cost_usd: 0.0,
+        last_log_timestamp: None,
     };
 
     {
@@ -698,9 +701,13 @@ async fn run_agent_process(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
+    // Stall detection: shared notify so stdout/stderr can signal activity
+    let stall_notify = Arc::new(Notify::new());
+
     let state_out = state.clone();
     let run_id_out = run_id.clone();
     let app_out = app.clone();
+    let stall_notify_out = stall_notify.clone();
 
     let stdout_handle = tokio::spawn(async move {
         if let Some(stdout) = stdout {
@@ -728,11 +735,14 @@ async fn run_agent_process(
                         run.logs.push(display_line.clone());
                         run.last_log_line = Some(display_line.clone());
                         run.log_count += 1;
+                        run.last_log_timestamp = Some(ts);
                         if let Some(ref act) = activity {
                             run.activity = Some(act.clone());
                         }
                     }
                 }
+                // Signal stall watcher that output was received
+                stall_notify_out.notify_one();
 
                 // Accumulate token usage into run and global totals
                 if let Some(ref usage) = token_usage {
@@ -754,6 +764,7 @@ async fn run_agent_process(
     let state_err = state.clone();
     let run_id_err = run_id.clone();
     let app_err = app.clone();
+    let stall_notify_err = stall_notify.clone();
 
     let stderr_handle = tokio::spawn(async move {
         if let Some(stderr) = stderr {
@@ -774,15 +785,208 @@ async fn run_agent_process(
                     run.logs.push(stderr_line.clone());
                     run.last_log_line = Some(stderr_line);
                     run.log_count += 1;
+                    run.last_log_timestamp = Some(Utc::now().to_rfc3339());
                 }
+                drop(s);
+                stall_notify_err.notify_one();
+            }
+        }
+    });
+
+    // Stall detection task: periodically checks if agent has been idle too long
+    let stall_state = state.clone();
+    let stall_run_id = run_id.clone();
+    let stall_app = app.clone();
+    let stall_stage_label = stage_label.clone();
+    let stall_notify_watch = stall_notify.clone();
+
+    let stall_handle = tokio::spawn(async move {
+        let stall_timeout = {
+            let s = stall_state.lock().await;
+            s.config.stall_timeout_secs
+        };
+        // 0 means disabled
+        if stall_timeout == 0 {
+            return false;
+        }
+        let timeout_duration = tokio::time::Duration::from_secs(stall_timeout);
+
+        loop {
+            // Wait for either a notification (output received) or the timeout
+            let timed_out = tokio::time::timeout(timeout_duration, stall_notify_watch.notified())
+                .await
+                .is_err();
+
+            if timed_out {
+                // Check if the run is still active
+                let is_running = {
+                    let s = stall_state.lock().await;
+                    s.runs
+                        .get(&stall_run_id)
+                        .map(|r| r.status == AgentStatus::Running)
+                        .unwrap_or(false)
+                };
+                if !is_running {
+                    return false;
+                }
+
+                // Kill the stalled agent
+                {
+                    let mut s = stall_state.lock().await;
+                    if let Some(pid) = s.agent_pids.remove(&stall_run_id) {
+                        unsafe {
+                            libc::kill(pid as i32, libc::SIGTERM);
+                        }
+                    }
+                    if let Some(run) = s.runs.get_mut(&stall_run_id) {
+                        run.status = AgentStatus::Failed;
+                        run.error = Some(format!(
+                            "Agent stalled: no output for {}s",
+                            stall_timeout
+                        ));
+                        run.finished_at = Some(Utc::now().to_rfc3339());
+                        let stall_msg = format!(
+                            "⚠ Agent killed: no output for {}s (stall timeout)",
+                            stall_timeout
+                        );
+                        run.logs.push(stall_msg.clone());
+                        logs::append_log_line(&stall_run_id, &stall_msg);
+                    }
+                }
+                let _ = stall_app.emit(
+                    "agent-status-changed",
+                    serde_json::json!({
+                        "run_id": &stall_run_id,
+                        "status": "failed",
+                        "stage": &stall_stage_label,
+                        "error": format!("Agent stalled: no output for {}s", stall_timeout),
+                    }),
+                );
+                return true;
+            }
+
+            // Not timed out - output was received, check if run is still active
+            let is_running = {
+                let s = stall_state.lock().await;
+                s.runs
+                    .get(&stall_run_id)
+                    .map(|r| r.status == AgentStatus::Running)
+                    .unwrap_or(false)
+            };
+            if !is_running {
+                return false;
             }
         }
     });
 
     let exit_status = child.wait().await;
 
+    // Cancel stall watcher since the process has exited
+    stall_handle.abort();
+    let stalled = stall_handle.await.unwrap_or(false);
+
     let _ = stdout_handle.await;
     let _ = stderr_handle.await;
+
+    // If the agent was killed by stall detection, skip normal status handling
+    if stalled {
+        // Persist metadata to disk so stall-killed runs show correct final status
+        if let Some(mut meta) = logs::load_meta(&run_id) {
+            meta.finished_at = Some(Utc::now().to_rfc3339());
+            meta.status = "failed".to_string();
+            logs::save_meta(&meta);
+        } else {
+            logs::save_meta(&logs::LogMeta {
+                run_id: run_id.clone(),
+                repo: repo.clone(),
+                issue_number,
+                issue_title: issue_title.clone(),
+                stage: stage_label.clone(),
+                started_at: Utc::now().to_rfc3339(),
+                finished_at: Some(Utc::now().to_rfc3339()),
+                status: "failed".to_string(),
+            });
+        }
+
+        // Run after_run hook (same as normal exit path)
+        {
+            let hooks = {
+                let s = state.lock().await;
+                s.config.hooks.clone()
+            };
+            if let Some(ref cmd) = hooks.after_run {
+                if let Err(e) = workspace::execute_hook_async(
+                    "after_run",
+                    cmd,
+                    &workspace_path,
+                    hooks.timeout_secs,
+                )
+                .await
+                {
+                    let warning = format!("[hook] after_run failed (ignored): {}", e);
+                    logs::append_log_line(&run_id, &warning);
+                    let mut s = state.lock().await;
+                    if let Some(run) = s.runs.get_mut(&run_id) {
+                        run.logs.push(warning);
+                    }
+                }
+            }
+        }
+
+        update_dock_badge(&state).await;
+
+        // Trigger retry logic for stalled agents
+        let (current_attempt, max_retries, retry_backoff, error_log) = {
+            let s = state.lock().await;
+            let run = s.runs.get(&run_id);
+            let attempt = run.map(|r| r.attempt).unwrap_or(1);
+            let max_r = run.map(|r| r.max_retries).unwrap_or(0);
+            let base_delay = if s.config.retry_base_delay_secs > 0 {
+                s.config.retry_base_delay_secs
+            } else {
+                s.config.retry_backoff_secs
+            };
+            let max_backoff = s.config.retry_max_backoff_secs;
+            let exp_backoff = base_delay.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
+            let backoff = exp_backoff.min(max_backoff);
+            let err = run.and_then(|r| r.error.clone()).unwrap_or_default();
+            (attempt, max_r, backoff, err)
+        };
+
+        if current_attempt <= max_retries {
+            spawn_retry(
+                app.clone(),
+                state.clone(),
+                repo,
+                issue_number,
+                issue_title,
+                issue_body,
+                stage,
+                workspace_path,
+                current_attempt + 1,
+                max_retries,
+                retry_backoff,
+                error_log,
+            );
+        } else {
+            let s = state.lock().await;
+            if s.config.notifications_enabled {
+                crate::notification::notify_pipeline_failed(
+                    &app,
+                    issue_number,
+                    &stage_label,
+                    s.config.notification_sound,
+                );
+            }
+            let should_cleanup = s.config.cleanup_on_failure;
+            let cleanup_hooks = s.config.hooks.clone();
+            drop(s);
+            if should_cleanup {
+                let _ = workspace::cleanup_workspace(&repo, issue_number, &cleanup_hooks);
+            }
+        }
+        return;
+    }
 
     // Determine if agent succeeded
     let succeeded = match &exit_status {
@@ -1078,6 +1282,7 @@ async fn run_agent_process(
                     input_tokens: total_input,
                     output_tokens: total_output,
                     cost_usd: total_cost,
+                    last_log_timestamp: None,
                 };
                 {
                     let mut s = state.lock().await;
@@ -1255,6 +1460,7 @@ fn spawn_next_stage(
             input_tokens: 0,
             output_tokens: 0,
             cost_usd: 0.0,
+            last_log_timestamp: None,
         };
 
         {
@@ -1389,6 +1595,7 @@ fn spawn_retry(
             input_tokens: 0,
             output_tokens: 0,
             cost_usd: 0.0,
+            last_log_timestamp: None,
         };
 
         {

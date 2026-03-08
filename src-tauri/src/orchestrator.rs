@@ -67,6 +67,8 @@ pub struct AgentRun {
     pub log_count: u32,
     /// Detected activity state from log content
     pub activity: Option<String>,
+    /// Timestamp of the last log output (for stall detection)
+    pub last_log_timestamp: Option<String>,
     /// Token usage from Claude result events
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -130,6 +132,11 @@ pub struct RunConfig {
     /// Default: ["priority:critical", "priority:high", "priority:medium", "priority:low"]
     #[serde(default = "default_priority_labels")]
     pub priority_labels: Vec<String>,
+    /// Stall detection timeout in seconds. If an agent produces no output for
+    /// this duration, it is killed and marked as failed. Set to 0 to disable.
+    /// Default: 300 (5 minutes).
+    #[serde(default = "default_stall_timeout")]
+    pub stall_timeout_secs: u64,
 }
 
 fn default_priority_labels() -> Vec<String> {
@@ -139,6 +146,10 @@ fn default_priority_labels() -> Vec<String> {
         "priority:medium".to_string(),
         "priority:low".to_string(),
     ]
+}
+
+fn default_stall_timeout() -> u64 {
+    300
 }
 
 fn default_retry_base_delay() -> u64 {
@@ -171,6 +182,7 @@ impl Default for RunConfig {
             stage_prompts: HashMap::new(),
             hooks: LifecycleHooks::default(),
             priority_labels: default_priority_labels(),
+            stall_timeout_secs: default_stall_timeout(),
         }
     }
 }
