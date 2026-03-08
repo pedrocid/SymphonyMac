@@ -167,6 +167,9 @@ mod tests {
             input_tokens: 100,
             output_tokens: 200,
             cost_usd: 0.05,
+            issue_labels: vec![],
+            skipped_stages: vec![],
+            stage_context: None,
         }
     }
 
