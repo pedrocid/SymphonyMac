@@ -26,6 +26,7 @@ export function Settings() {
     cleanup_on_failure: false,
     cleanup_on_stop: false,
     workspace_ttl_days: 7,
+    max_concurrent_by_stage: {},
   });
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,6 +211,39 @@ export function Settings() {
                   }
                   className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">Per-Stage Concurrency Limits</label>
+                <p className="text-xs text-[#8b949e] mb-3">
+                  Set per-stage limits (0 = use global max). Stages without limits fall back to the global setting.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  {(["implement", "code_review", "testing", "merge"] as const).map((stage) => (
+                    <div key={stage}>
+                      <label className="block text-xs text-[#8b949e] mb-1 capitalize">
+                        {stage.replace("_", " ")}
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={20}
+                        value={config.max_concurrent_by_stage[stage] || 0}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          const updated = { ...config.max_concurrent_by_stage };
+                          if (val === 0) {
+                            delete updated[stage];
+                          } else {
+                            updated[stage] = val;
+                          }
+                          setConfig({ ...config, max_concurrent_by_stage: updated });
+                        }}
+                        className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div>
