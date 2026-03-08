@@ -418,3 +418,105 @@ pub async fn get_issue_detail(repo: String, number: u64) -> Result<Issue, String
         updated_at: v["updatedAt"].as_str().unwrap_or("").to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_blockers_blocked_by() {
+        let text = "This issue is blocked by #10 and blocked by #20";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_parse_blockers_depends_on() {
+        let text = "Depends on #5";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![5]);
+    }
+
+    #[test]
+    fn test_parse_blockers_requires() {
+        let text = "This requires #42 to be done first";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![42]);
+    }
+
+    #[test]
+    fn test_parse_blockers_waiting_on() {
+        let text = "Waiting on #3";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![3]);
+    }
+
+    #[test]
+    fn test_parse_blockers_waiting_for() {
+        let text = "Waiting for #7";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![7]);
+    }
+
+    #[test]
+    fn test_parse_blockers_after() {
+        let text = "Should be done after #15";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![15]);
+    }
+
+    #[test]
+    fn test_parse_blockers_case_insensitive() {
+        let text = "BLOCKED BY #99 and Depends On #88";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![99, 88]);
+    }
+
+    #[test]
+    fn test_parse_blockers_no_duplicates() {
+        let text = "Blocked by #10, also depends on #10";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![10]);
+    }
+
+    #[test]
+    fn test_parse_blockers_empty_text() {
+        let blockers = parse_blockers("");
+        assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_blockers_no_matches() {
+        let text = "This is a regular issue with no blockers";
+        let blockers = parse_blockers(text);
+        assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_blockers_multiple_patterns() {
+        let text = "Blocked by #1, depends on #2, requires #3, waiting on #4, waiting for #5, after #6";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_parse_blockers_unicode_text() {
+        let text = "🚫 Blocked by #42 — needs résumé feature first";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![42]);
+    }
+
+    #[test]
+    fn test_parse_blockers_invalid_number() {
+        let text = "Blocked by #abc";
+        let blockers = parse_blockers(text);
+        assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_blockers_zero_ignored() {
+        let text = "Blocked by #0";
+        let blockers = parse_blockers(text);
+        assert!(blockers.is_empty());
+    }
+}
