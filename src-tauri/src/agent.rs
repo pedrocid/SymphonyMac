@@ -881,7 +881,16 @@ async fn run_agent_process(
             let run = s.runs.get(&run_id);
             let attempt = run.map(|r| r.attempt).unwrap_or(1);
             let max_r = run.map(|r| r.max_retries).unwrap_or(0);
-            let backoff = s.config.retry_backoff_secs;
+            // Exponential backoff: min(base_delay * 2^(attempt-1), max_backoff)
+            let base_delay = if s.config.retry_base_delay_secs > 0 {
+                s.config.retry_base_delay_secs
+            } else {
+                // Backward compatibility: use retry_backoff_secs as base delay
+                s.config.retry_backoff_secs
+            };
+            let max_backoff = s.config.retry_max_backoff_secs;
+            let exp_backoff = base_delay.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
+            let backoff = exp_backoff.min(max_backoff);
             let err = run.and_then(|r| r.error.clone()).unwrap_or_default();
             (attempt, max_r, backoff, err)
         };

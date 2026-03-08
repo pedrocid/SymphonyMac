@@ -29,6 +29,8 @@ export interface RunConfig {
   notification_sound: boolean;
   max_retries: number;
   retry_backoff_secs: number;
+  retry_base_delay_secs: number;
+  retry_max_backoff_secs: number;
   cleanup_on_failure: boolean;
   cleanup_on_stop: boolean;
   workspace_ttl_days: number;
