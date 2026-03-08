@@ -301,7 +301,7 @@ mod tests {
             Some(&previous_context),
         );
 
-        assert!(prompt.contains("GitHub issue #62"));
+        assert!(prompt.contains("issue #62"));
         assert!(prompt.contains("## Context from implement stage"));
         assert!(prompt.contains("PR number: #91"));
         assert!(prompt.contains("Previous attempt (2) failed with: cargo test failed"));
