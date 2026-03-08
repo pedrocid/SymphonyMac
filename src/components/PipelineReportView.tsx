@@ -1,36 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
-interface StageReport {
-  name: string;
-  status: string;
-  duration_secs: number | null;
-  duration_display: string;
-  files_modified: string[];
-  lines_added: number;
-  lines_removed: number;
-  commands_executed: string[];
-  summary: string;
-  attempt: number;
-}
-
-export interface PipelineReport {
-  issue_number: number;
-  issue_title: string;
-  repo: string;
-  total_duration_secs: number;
-  total_duration_display: string;
-  stages: StageReport[];
-  pr_number: number | null;
-  pr_url: string | null;
-  issue_url: string;
-  code_review_summary: string;
-  testing_summary: string;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cost_usd: number;
-}
+import type { PipelineReport } from "../contracts";
 
 const STAGE_COLORS: Record<string, string> = {
   Implement: "#d29922",

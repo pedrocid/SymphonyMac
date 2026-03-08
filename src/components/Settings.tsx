@@ -4,6 +4,10 @@ import { useSettingsController } from "../features/settings/useSettingsControlle
 export function Settings() {
   const controller = useSettingsController();
 
+  if (!controller.config) {
+    return <div className="flex-1 flex items-center justify-center text-[#8b949e]">Loading...</div>;
+  }
+
   return (
     <SettingsView
       config={controller.config}

@@ -12,8 +12,10 @@ use crate::SharedState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map};
 use tauri::{AppHandle, Emitter};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct AgentLogLine {
     pub run_id: String,
     pub timestamp: String,
@@ -24,6 +26,7 @@ pub struct AgentLogLine {
 pub fn get_default_prompts() -> std::collections::HashMap<String, String> {
     prompt::get_default_prompts()
 }
+
 
 /// Launch an agent for a specific pipeline stage.
 pub async fn launch_agent(
@@ -121,6 +124,7 @@ pub async fn retry_agent(
         )
     };
 
+    // Try to fetch the issue body and labels from GitHub
     let (body, issue_labels) =
         match crate::github::get_issue_detail(repo.clone(), issue_number).await {
             Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
@@ -194,6 +198,7 @@ pub async fn retry_agent_from_stage(
         PipelineStage::Implement
     };
 
+    // Fetch the issue body and labels from GitHub
     let (body, issue_labels) =
         match crate::github::get_issue_detail(repo.clone(), issue_number).await {
             Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),

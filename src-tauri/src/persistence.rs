@@ -97,7 +97,9 @@ pub fn load_state() -> Option<PersistedState> {
         }
     };
     let data = fs::read_to_string(&path).ok()?;
-    let mut persisted: PersistedState = serde_json::from_str(&data).ok()?;
+    // Normalize the pre-snake_case AwaitingApproval value so older state files still load.
+    let normalized = data.replace("\"awaitingapproval\"", "\"awaiting_approval\"");
+    let mut persisted: PersistedState = serde_json::from_str(&normalized).ok()?;
 
     // Mark any in-progress runs as Interrupted since the app restarted
     let mut modified = false;

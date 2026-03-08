@@ -1,12 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
-interface AgentLogLine {
-  run_id: string;
-  timestamp: string;
-  line: string;
-}
+import type { AgentLogLine } from "../contracts";
 
 export function LogViewer({ runId, onClose }: { runId: string; onClose: () => void }) {
   const [logs, setLogs] = useState<string[]>([]);

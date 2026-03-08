@@ -4,9 +4,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "contracts.ts")]
 pub enum AgentStatus {
     Preparing,
     Running,
@@ -18,8 +20,9 @@ pub enum AgentStatus {
     AwaitingApproval,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "contracts.ts")]
 pub enum PipelineStage {
     Implement,
     CodeReview,
@@ -42,7 +45,8 @@ impl std::fmt::Display for PipelineStage {
 
 /// Structured context generated at the end of each pipeline stage,
 /// injected into the next stage's prompt to provide continuity.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct StageContext {
     /// Which stage produced this context
     pub from_stage: String,
@@ -102,7 +106,8 @@ impl StageContext {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct AgentRun {
     pub id: String,
     pub repo: String,
@@ -205,8 +210,9 @@ impl From<&AgentRun> for RunSummary {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(default)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct LifecycleHooks {
     /// Runs after a new workspace is created (e.g., npm install). Failure aborts.
     pub after_create: Option<String>,
@@ -232,8 +238,9 @@ impl Default for LifecycleHooks {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(default)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct RunConfig {
     pub agent_type: String,
     pub auto_approve: bool,
@@ -427,7 +434,8 @@ fn sort_issues_for_dispatch(issues: &mut [crate::github::Issue], priority_labels
     });
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct OrchestratorOverview {
     pub is_running: bool,
     pub repos: Vec<String>,
@@ -475,6 +483,20 @@ fn build_overview(state: &OrchestratorState) -> OrchestratorOverview {
         total_cost_usd: state.total_cost_usd,
         total_runtime_secs: state.total_runtime_secs,
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
+pub struct BlockedIssue {
+    pub repo: String,
+    pub issue_number: u64,
+    pub blocked_by: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
+pub struct BlockedIssueListEvent {
+    pub blocked: Vec<BlockedIssue>,
 }
 
 pub struct OrchestratorState {
@@ -1106,15 +1128,16 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
         // Always emit so the UI clears stale blocked state when blockers resolve
         let _ = app.emit(
             "orchestrator-blocked-list",
-            serde_json::json!({
-                "blocked": blocked_issues.iter().map(|(repo, num, blockers)| {
-                    serde_json::json!({
-                        "repo": repo,
-                        "issue_number": num,
-                        "blocked_by": blockers,
+            BlockedIssueListEvent {
+                blocked: blocked_issues
+                    .into_iter()
+                    .map(|(repo, issue_number, blocked_by)| BlockedIssue {
+                        repo,
+                        issue_number,
+                        blocked_by,
                     })
-                }).collect::<Vec<_>>(),
-            }),
+                    .collect(),
+            },
         );
 
         tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;

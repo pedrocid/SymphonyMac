@@ -1,7 +1,9 @@
 use crate::orchestrator::AgentRun;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct StageReport {
     pub name: String,
     pub status: String,
@@ -15,7 +17,8 @@ pub struct StageReport {
     pub attempt: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct PipelineReport {
     pub issue_number: u64,
     pub issue_title: String,

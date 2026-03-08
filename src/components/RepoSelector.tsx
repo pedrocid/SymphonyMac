@@ -1,15 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-interface Repo {
-  full_name: string;
-  name: string;
-  owner: string;
-  description: string | null;
-  url: string;
-  default_branch: string;
-  is_private: boolean;
-}
+import type { Repo } from "../contracts";
 
 export function RepoSelector({
   selectedRepos,
