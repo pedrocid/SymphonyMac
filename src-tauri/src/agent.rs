@@ -154,13 +154,24 @@ fn build_prompt(
     issue_title: &str,
     issue_body: &str,
     stage_prompts: &std::collections::HashMap<String, String>,
+    attempt: u32,
+    previous_error: &str,
 ) -> String {
     let stage_key = stage.to_string();
     let template = match stage_prompts.get(&stage_key) {
         Some(custom) if !custom.trim().is_empty() => custom.as_str(),
         _ => default_prompt(stage),
     };
-    render_template(template, issue_number, repo, issue_title, issue_body, 1, "")
+    let rendered = render_template(template, issue_number, repo, issue_title, issue_body, attempt, previous_error);
+    // If the template doesn't use {{previous_error}} and we have one, append it so retry context isn't lost
+    if !previous_error.is_empty() && !template.contains("{{previous_error}}") {
+        format!(
+            "{}\n\nIMPORTANT: Previous attempt ({}) failed with: {}\nFix the issues and try again.",
+            rendered, attempt, previous_error
+        )
+    } else {
+        rendered
+    }
 }
 
 /// Returns the default prompt templates for all stages.
@@ -416,7 +427,7 @@ pub async fn launch_agent(
 
     let max_retries = config.max_retries;
 
-    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts);
+    let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "");
     let (cmd, args) = build_command_args(&config, &prompt);
     let command_display = format_command_display(&cmd, &args);
 
@@ -1074,7 +1085,7 @@ fn spawn_next_stage(
             }),
         );
 
-        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts);
+        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, 1, "");
         let (cmd, args) = build_command_args(&config, &prompt);
         let command_display = format_command_display(&cmd, &args);
 
@@ -1195,11 +1206,7 @@ fn spawn_retry(
             }),
         );
 
-        let base_prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts);
-        let prompt = format!(
-            "{}\n\nIMPORTANT: Previous attempt failed with: {}\nFix the issues and try again.",
-            base_prompt, previous_error
-        );
+        let prompt = build_prompt(&stage, issue_number, &repo, &issue_title, &issue_body, &config.stage_prompts, attempt, &previous_error);
         let (cmd, args) = build_command_args(&config, &prompt);
         let command_display = format_command_display(&cmd, &args);
         {
