@@ -27,6 +27,18 @@ pub fn notify_pipeline_failed(app: &AppHandle, issue_number: u64, stage: &str, s
     );
 }
 
+pub fn notify_awaiting_approval(app: &AppHandle, issue_number: u64, stage: &str, sound: bool) {
+    send_notification(
+        app,
+        "Approval Required",
+        &format!(
+            "Issue #{} completed {} stage - awaiting your approval to continue",
+            issue_number, stage
+        ),
+        sound,
+    );
+}
+
 pub fn notify_all_processed(app: &AppHandle, sound: bool) {
     send_notification(
         app,

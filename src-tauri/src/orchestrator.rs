@@ -14,6 +14,7 @@ pub enum AgentStatus {
     Failed,
     Stopped,
     Interrupted,
+    AwaitingApproval,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -137,6 +138,9 @@ pub struct AgentRun {
     /// Structured context from the previous pipeline stage
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_context: Option<StageContext>,
+    /// The next stage to advance to when approval is granted (only set when status is AwaitingApproval)
+    #[serde(default)]
+    pub pending_next_stage: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +211,12 @@ pub struct RunConfig {
     /// Default: {"skip:code-review": ["code_review"], "skip:testing": ["testing"], "docs-only": ["code_review", "testing"]}
     #[serde(default = "default_stage_skip_labels")]
     pub stage_skip_labels: HashMap<String, Vec<String>>,
+    /// Per-stage approval gates. When a gate is enabled for a stage, the pipeline
+    /// pauses after that stage completes and waits for explicit user approval before
+    /// advancing to the next stage. Keys are stage names (implement, code_review,
+    /// testing, merge). Default: all false (fully automatic).
+    #[serde(default)]
+    pub approval_gates: HashMap<String, bool>,
 }
 
 fn default_priority_labels() -> Vec<String> {
@@ -268,6 +278,7 @@ impl Default for RunConfig {
             priority_labels: default_priority_labels(),
             stall_timeout_secs: default_stall_timeout(),
             stage_skip_labels: default_stage_skip_labels(),
+            approval_gates: HashMap::new(),
         }
     }
 }
@@ -385,9 +396,15 @@ impl OrchestratorState {
     pub fn new() -> Self {
         // Try to load persisted state from disk
         if let Some(persisted) = crate::persistence::load_state() {
+            // Backward compat: migrate old single `repo` to `repos` list
+            let repos = if persisted.repos.is_empty() {
+                persisted.repo.into_iter().collect()
+            } else {
+                persisted.repos
+            };
             return Self {
                 is_running: false,
-                repo: persisted.repo,
+                repos,
                 runs: persisted.runs,
                 config: RunConfig::default(),
                 agent_pids: HashMap::new(),
@@ -607,7 +624,7 @@ pub async fn resume_pipeline(
     state: tauri::State<'_, SharedState>,
     run_id: String,
 ) -> Result<(), String> {
-    let (repo, issue_number, issue_title, resume_stage) = {
+    let (repo, issue_number, issue_title, resume_stage, stored_labels) = {
         let mut s = state.lock().await;
         let run = s
             .runs
@@ -623,6 +640,7 @@ pub async fn resume_pipeline(
             run.issue_number,
             run.issue_title.clone(),
             run.stage.clone(),
+            run.issue_labels.clone(),
         );
 
         // Mark the old interrupted run as stopped so it doesn't block dispatch
@@ -637,7 +655,7 @@ pub async fn resume_pipeline(
     // Fetch the issue body and labels from GitHub so the prompt has full context
     let (issue_body, issue_labels) = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
         Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
-        Err(_) => (String::new(), Vec::new()),
+        Err(_) => (String::new(), stored_labels),
     };
 
     crate::agent::launch_agent(
@@ -1008,6 +1026,12 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
     let mut s = state.lock().await;
     s.is_running = false;
     s.persist();
+}
+
+/// Check whether an approval gate is enabled for the given stage.
+pub fn is_gate_enabled(config: &RunConfig, stage: &PipelineStage) -> bool {
+    let stage_name = stage.to_string();
+    config.approval_gates.get(&stage_name).copied().unwrap_or(false)
 }
 
 /// Check whether an additional agent for the given stage can be launched

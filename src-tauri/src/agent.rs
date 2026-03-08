@@ -647,6 +647,7 @@ pub async fn launch_agent(
         issue_labels: issue_labels.clone(),
         skipped_stages: skipped_stage_names,
         stage_context: None,
+        pending_next_stage: None,
     };
 
     {
@@ -1501,6 +1502,7 @@ async fn run_agent_process(
                     issue_labels: issue_labels.clone(),
                     skipped_stages: done_skipped,
                     stage_context: None,
+                    pending_next_stage: None,
                 };
                 {
                     let mut s = state.lock().await;
@@ -1549,18 +1551,65 @@ async fn run_agent_process(
         };
 
         if let Some(next) = next_stage {
-            spawn_next_stage(
-                app.clone(),
-                state.clone(),
-                repo,
-                issue_number,
-                issue_title,
-                issue_body,
-                next,
-                workspace_path,
-                issue_labels,
-                stage_ctx,
-            );
+            // Check if the current stage has an approval gate before advancing
+            let gate_enabled = {
+                let s = state.lock().await;
+                crate::orchestrator::is_gate_enabled(&s.config, &stage)
+            };
+
+            if gate_enabled {
+                // Pause the pipeline: set status to AwaitingApproval
+                let next_stage_name = next.to_string();
+                {
+                    let mut s = state.lock().await;
+                    if let Some(run) = s.runs.get_mut(&run_id) {
+                        run.status = AgentStatus::AwaitingApproval;
+                        run.pending_next_stage = Some(next_stage_name.clone());
+                        run.logs.push(format!(
+                            "[pipeline] Approval gate: paused after {} stage. Awaiting user approval to proceed to {}.",
+                            stage, next_stage_name
+                        ));
+                    }
+                    s.persist();
+                }
+                let _ = app.emit(
+                    "agent-status-changed",
+                    serde_json::json!({
+                        "run_id": &run_id,
+                        "status": "awaiting_approval",
+                        "stage": &stage_label,
+                        "pending_next_stage": &next_stage_name,
+                    }),
+                );
+
+                // Send macOS notification
+                {
+                    let s = state.lock().await;
+                    if s.config.notifications_enabled {
+                        crate::notification::notify_awaiting_approval(
+                            &app,
+                            issue_number,
+                            &stage_label,
+                            s.config.notification_sound,
+                        );
+                    }
+                }
+
+                update_dock_badge(&state).await;
+            } else {
+                spawn_next_stage(
+                    app.clone(),
+                    state.clone(),
+                    repo,
+                    issue_number,
+                    issue_title,
+                    issue_body,
+                    next,
+                    workspace_path,
+                    issue_labels,
+                    stage_ctx,
+                );
+            }
         }
     }
 }
@@ -1690,6 +1739,7 @@ fn spawn_next_stage(
             issue_labels: issue_labels.clone(),
             skipped_stages: skipped_stage_names,
             stage_context: None,
+            pending_next_stage: None,
         };
 
         {
@@ -1834,6 +1884,7 @@ fn spawn_retry(
             issue_labels: issue_labels.clone(),
             skipped_stages: skipped_stage_names,
             stage_context: None,
+            pending_next_stage: None,
         };
 
         {
@@ -2012,7 +2063,7 @@ pub async fn retry_agent_from_stage(
         _ => return Err(format!("Invalid stage: {}", from_stage)),
     };
 
-    let (repo, issue_number, issue_title) = {
+    let (repo, issue_number, issue_title, stored_labels) = {
         let s = state.lock().await;
         let run = s.runs.get(&run_id).ok_or("Run not found")?;
         if run.status != AgentStatus::Failed
@@ -2025,6 +2076,7 @@ pub async fn retry_agent_from_stage(
             run.repo.clone(),
             run.issue_number,
             run.issue_title.clone(),
+            run.issue_labels.clone(),
         )
     };
 
@@ -2055,10 +2107,10 @@ pub async fn retry_agent_from_stage(
         PipelineStage::Implement
     };
 
-    // Fetch the issue body from GitHub
-    let body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
-        Ok(issue) => issue.body.unwrap_or_default(),
-        Err(_) => String::new(),
+    // Fetch the issue body and labels from GitHub
+    let (body, issue_labels) = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
+        Err(_) => (String::new(), stored_labels),
     };
 
     launch_agent(
@@ -2069,8 +2121,152 @@ pub async fn retry_agent_from_stage(
         issue_title,
         body,
         effective_stage,
+        issue_labels,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn approve_stage(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+) -> Result<(), String> {
+    let (repo, issue_number, issue_title, issue_body, next_stage, workspace_path, issue_labels, previous_context) = {
+        let mut s = state.lock().await;
+        let run = s
+            .runs
+            .get(&run_id)
+            .ok_or("Run not found")?;
+        if run.status != AgentStatus::AwaitingApproval {
+            return Err(format!("Run {} is not awaiting approval (status: {:?})", run_id, run.status));
+        }
+        let next_stage_str = run.pending_next_stage.clone()
+            .ok_or("No pending next stage found")?;
+        let next_stage = match next_stage_str.as_str() {
+            "implement" => PipelineStage::Implement,
+            "code_review" => PipelineStage::CodeReview,
+            "testing" => PipelineStage::Testing,
+            "merge" => PipelineStage::Merge,
+            "done" => PipelineStage::Done,
+            _ => return Err(format!("Invalid pending stage: {}", next_stage_str)),
+        };
+        let info = (
+            run.repo.clone(),
+            run.issue_number,
+            run.issue_title.clone(),
+            String::new(),
+            next_stage,
+            run.workspace_path.clone(),
+            run.issue_labels.clone(),
+            run.stage_context.clone(),
+        );
+
+        // Update the run: mark as completed (gate passed), clear pending
+        if let Some(run) = s.runs.get_mut(&run_id) {
+            run.status = AgentStatus::Completed;
+            run.pending_next_stage = None;
+            run.logs.push("[approval] Stage approved by user".to_string());
+        }
+        s.persist();
+        info
+    };
+
+    let _ = app.emit(
+        "agent-status-changed",
+        serde_json::json!({
+            "run_id": &run_id,
+            "status": "completed",
+            "stage": "approved",
+        }),
+    );
+
+    // Fetch the issue body from GitHub
+    let body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => issue.body.unwrap_or_default(),
+        Err(_) => issue_body,
+    };
+
+    // If the next stage is Done (approval after Merge), handle it directly
+    if next_stage == PipelineStage::Done {
+        // The Done stage is handled inline in run_agent_process for Merge.
+        // For approval gates after Merge, we just need to re-trigger the Done creation.
+        // We'll spawn the next stage which will handle it.
+        return Ok(());
+    }
+
+    // Spawn the next stage
+    let state_clone = state.inner().clone();
+    spawn_next_stage(
+        app,
+        state_clone,
+        repo,
+        issue_number,
+        issue_title,
+        body,
+        next_stage,
+        std::path::PathBuf::from(workspace_path),
+        issue_labels,
+        previous_context,
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reject_stage(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+) -> Result<(), String> {
+    let (issue_number, stage_label) = {
+        let mut s = state.lock().await;
+        let run = s
+            .runs
+            .get(&run_id)
+            .ok_or("Run not found")?;
+        if run.status != AgentStatus::AwaitingApproval {
+            return Err(format!("Run {} is not awaiting approval (status: {:?})", run_id, run.status));
+        }
+        let info = (run.issue_number, run.stage.to_string());
+
+        if let Some(run) = s.runs.get_mut(&run_id) {
+            run.status = AgentStatus::Failed;
+            run.error = Some("Rejected by user".to_string());
+            run.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            run.pending_next_stage = None;
+            run.logs.push("[approval] Stage rejected by user".to_string());
+        }
+        s.persist();
+        info
+    };
+
+    let _ = app.emit(
+        "agent-status-changed",
+        serde_json::json!({
+            "run_id": &run_id,
+            "status": "failed",
+            "stage": &stage_label,
+            "error": "Rejected by user",
+        }),
+    );
+
+    // Send notification about rejection
+    {
+        let s = state.lock().await;
+        if s.config.notifications_enabled {
+            crate::notification::notify_pipeline_failed(
+                &app,
+                issue_number,
+                &stage_label,
+                s.config.notification_sound,
+            );
+        }
+    }
+
+    update_dock_badge(&state.inner().clone()).await;
+
+    Ok(())
 }
 
 #[tauri::command]

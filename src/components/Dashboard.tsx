@@ -18,6 +18,7 @@ interface AgentRun {
   logs: string[];
   issue_labels: string[];
   skipped_stages: string[];
+  pending_next_stage: string | null;
 }
 
 interface Issue {
@@ -64,6 +65,7 @@ type KanbanCard = {
   maxRetries?: number;
   blockedBy?: number[];
   skippedStages?: string[];
+  pendingNextStage?: string | null;
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -139,6 +141,14 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     try { await invoke("retry_agent_from_stage", { runId, fromStage }); loadStatus(); } catch (e) { setError(String(e)); }
   }
 
+  async function approveStage(runId: string) {
+    try { await invoke("approve_stage", { runId }); loadStatus(); } catch (e) { setError(String(e)); }
+  }
+
+  async function rejectStage(runId: string) {
+    try { await invoke("reject_stage", { runId }); loadStatus(); } catch (e) { setError(String(e)); }
+  }
+
   async function launchIssue(issue: Issue, repo: string) {
     try {
       await invoke("start_single_issue", {
@@ -206,6 +216,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const reviewCards: KanbanCard[] = [];
   const testingCards: KanbanCard[] = [];
   const mergeCards: KanbanCard[] = [];
+  const awaitingApprovalCards: KanbanCard[] = [];
   const doneCards: KanbanCard[] = [];
   const failedCards: KanbanCard[] = [];
 
@@ -235,6 +246,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       attempt: run?.attempt,
       maxRetries: run?.max_retries,
       skippedStages: skipped,
+      pendingNextStage: run?.pending_next_stage,
     };
   }
 
@@ -254,6 +266,12 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     const hasDone = runs.some((r) => r.stage === "done" && r.status === "completed");
     if (hasDone) {
       doneCards.push(card);
+      continue;
+    }
+
+    // Check if awaiting approval
+    if (latestRun.status === "awaiting_approval") {
+      awaitingApprovalCards.push(card);
       continue;
     }
 
@@ -308,6 +326,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     { id: "review", title: "Code Review", color: "#bc8cff", items: reviewCards },
     { id: "testing", title: "Testing", color: "#58a6ff", items: testingCards },
     { id: "merge", title: "Merging", color: "#d2a8ff", items: mergeCards },
+    { id: "approval", title: "Awaiting Approval", color: "#d29922", items: awaitingApprovalCards },
     { id: "done", title: "Done", color: "#3fb950", items: doneCards },
     { id: "failed", title: "Failed", color: "#f85149", items: failedCards },
   ];
@@ -430,6 +449,30 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className="w-1.5 h-1.5 bg-[#484f58] rounded-full animate-pulse" />
                         <span className="text-xs text-[#484f58]">Starting next stage...</span>
+                      </div>
+                    )}
+                    {card.runStatus === "awaiting_approval" && (
+                      <div className="mb-2">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <span className="w-1.5 h-1.5 bg-[#d29922] rounded-full animate-pulse" />
+                          <span className="text-xs text-[#d29922]">
+                            Awaiting approval {card.pendingNextStage && `to proceed to ${(card.pendingNextStage || "").replace("_", " ")}`}
+                          </span>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); approveStage(card.runId!); }}
+                            className="px-2.5 py-1 text-xs font-medium bg-[#3fb95015] text-[#3fb950] border border-[#3fb950] rounded-md hover:bg-[#3fb95030] transition-colors"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); rejectStage(card.runId!); }}
+                            className="px-2.5 py-1 text-xs font-medium bg-[#f8514915] text-[#f85149] border border-[#f85149] rounded-md hover:bg-[#f8514930] transition-colors"
+                          >
+                            Reject
+                          </button>
+                        </div>
                       </div>
                     )}
 
