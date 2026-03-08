@@ -4,8 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "contracts:generate": "cargo run --manifest-path src-tauri/Cargo.toml --bin export-contracts",
+    "dev": "npm run contracts:generate && vite",
+    "build": "npm run contracts:generate && tsc && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:backend": "cargo test --manifest-path src-tauri/Cargo.toml",

@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct Repo {
     pub full_name: String,
     pub name: String,
@@ -12,7 +14,8 @@ pub struct Repo {
     pub is_private: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct Issue {
     pub number: u64,
     pub title: String,

@@ -2,8 +2,10 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "contracts.ts")]
 pub struct WorkspaceInfo {
     pub name: String,
     pub path: String,

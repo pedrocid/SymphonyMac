@@ -1,4 +1,5 @@
 mod agent;
+mod contracts;
 mod dock;
 mod github;
 mod logs;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub type SharedState = Arc<Mutex<OrchestratorState>>;
+pub use contracts::export_typescript_contracts;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
