@@ -46,14 +46,16 @@ export async function listIssuesForRepos(
   options: { state: IssueStateFilter; label?: string | null },
 ): Promise<RepoIssue[]> {
   const { state, label = null } = options;
-  const issuesByRepo = await Promise.all(
+  const results = await Promise.allSettled(
     repos.map(async (repo) => {
       const issues = await listIssues(repo, state, label);
       return issues.map((issue) => ({ ...issue, _repo: repo }));
     }),
   );
 
-  return issuesByRepo.flat();
+  return results
+    .filter((r): r is PromiseFulfilledResult<RepoIssue[]> => r.status === "fulfilled")
+    .flatMap((r) => r.value);
 }
 
 function toStartIssueInput(issue: RepoIssue): StartIssueInput {

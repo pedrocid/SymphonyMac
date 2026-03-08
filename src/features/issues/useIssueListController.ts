@@ -103,12 +103,15 @@ export function useIssueListController({
   }
 
   async function launchIssue(issue: RepoIssue) {
+    setLaunching(true);
     try {
       await startIssue(issue);
       setError(null);
       onRunStarted();
     } catch (launchError) {
       setError(String(launchError));
+    } finally {
+      setLaunching(false);
     }
   }
 
