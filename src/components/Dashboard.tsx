@@ -77,19 +77,19 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const [status, setStatus] = useState<OrchestratorStatus | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [blockedMap, setBlockedMap] = useState<Map<number, number[]>>(new Map());
+  const [blockedMap, setBlockedMap] = useState<Map<string, number[]>>(new Map());
 
   useEffect(() => {
     loadStatus();
     const interval = setInterval(loadStatus, 3000);
     const unlistenStatus = listen("agent-status-changed", () => loadStatus());
     const unlistenOrch = listen("orchestrator-status", () => loadStatus());
-    const unlistenBlocked = listen<{ blocked: { issue_number: number; blocked_by: number[] }[] }>(
+    const unlistenBlocked = listen<{ blocked: { repo: string; issue_number: number; blocked_by: number[] }[] }>(
       "orchestrator-blocked-list",
       (event) => {
-        const newMap = new Map<number, number[]>();
+        const newMap = new Map<string, number[]>();
         for (const entry of event.payload.blocked) {
-          newMap.set(entry.issue_number, entry.blocked_by);
+          newMap.set(`${entry.repo}:${entry.issue_number}`, entry.blocked_by);
         }
         setBlockedMap(newMap);
       }
@@ -179,17 +179,19 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   }
 
   // For each issue, find the latest run (by started_at)
-  const latestRunByIssue = new Map<number, AgentRun>();
+  // Use "repo:issue_number" as key to avoid cross-repo collisions
+  const latestRunByIssue = new Map<string, AgentRun>();
   // Also collect all runs per issue to find the "best" stage
-  const allRunsByIssue = new Map<number, AgentRun[]>();
+  const allRunsByIssue = new Map<string, AgentRun[]>();
   for (const run of status.runs) {
-    const existing = allRunsByIssue.get(run.issue_number) || [];
+    const runKey = `${run.repo}:${run.issue_number}`;
+    const existing = allRunsByIssue.get(runKey) || [];
     existing.push(run);
-    allRunsByIssue.set(run.issue_number, existing);
+    allRunsByIssue.set(runKey, existing);
 
-    const current = latestRunByIssue.get(run.issue_number);
+    const current = latestRunByIssue.get(runKey);
     if (!current || new Date(run.started_at) > new Date(current.started_at)) {
-      latestRunByIssue.set(run.issue_number, run);
+      latestRunByIssue.set(runKey, run);
     }
   }
 
@@ -212,7 +214,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
       : allIssueRuns.find((r) => r.skipped_stages?.length)?.skipped_stages || [];
 
     return {
-      id: run?.id || `issue-${issue?.number}`,
+      id: run?.id || `issue-${repo || issue?._repo}-${issue?.number}`,
       repo: repo || run?.repo,
       number: issueNum,
       title: issue?.title || run?.issue_title || "",
@@ -230,14 +232,16 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
     };
   }
 
-  // Track which issues we've processed
-  const processedIssues = new Set<number>();
+  // Track which issues we've processed (using "repo:number" keys)
+  const processedIssues = new Set<string>();
 
   // First: process all issues that have runs
-  for (const [issueNum, runs] of allRunsByIssue.entries()) {
-    processedIssues.add(issueNum);
-    const issue = issues.find((i) => i.number === issueNum) || null;
-    const latestRun = latestRunByIssue.get(issueNum)!;
+  for (const [issueKey, runs] of allRunsByIssue.entries()) {
+    processedIssues.add(issueKey);
+    const [runRepo] = issueKey.split(":");
+    const issueNum = parseInt(issueKey.split(":").slice(1).join(":"));
+    const issue = issues.find((i) => i.number === issueNum && i._repo === runRepo) || null;
+    const latestRun = latestRunByIssue.get(issueKey)!;
     const card = makeCard(issue, latestRun);
 
     // Check if there's a "done" stage
@@ -277,9 +281,10 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
   // Then: issues without any runs
   for (const issue of issues) {
-    if (processedIssues.has(issue.number)) continue;
+    const ik = `${issue._repo}:${issue.number}`;
+    if (processedIssues.has(ik)) continue;
     if (issue.state === "OPEN") {
-      const blockers = blockedMap.get(issue.number);
+      const blockers = blockedMap.get(ik);
       if (blockers && blockers.length > 0) {
         blockedCards.push({ ...makeCard(issue, null, issue._repo), blockedBy: blockers });
       } else {
@@ -491,7 +496,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                         {!card.runId && col.id === "open" && card.repo && (
                           <button onClick={(e) => {
                               e.stopPropagation();
-                              const issue = issues.find((i) => i.number === card.number);
+                              const issue = issues.find((i) => i.number === card.number && i._repo === card.repo);
                               if (issue && card.repo) launchIssue(issue, card.repo);
                             }}
                             className="text-[#3fb950] hover:underline opacity-0 group-hover:opacity-100 transition-opacity">

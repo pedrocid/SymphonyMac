@@ -834,7 +834,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
 
         // ---- STEP 4: Dispatch issues ----
         let mut used_slots = 0usize;
-        let mut blocked_issues: Vec<(u64, Vec<u64>)> = Vec::new();
+        let mut blocked_issues: Vec<(String, u64, Vec<u64>)> = Vec::new();
         let mut stage_slots_used: HashMap<String, usize> = HashMap::new();
 
         for (repo, issue) in &all_issues {
@@ -858,7 +858,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
             if !blocker_nums.is_empty() {
                 let open_blockers = github::check_blockers_open(repo, &blocker_nums);
                 if !open_blockers.is_empty() {
-                    blocked_issues.push((issue.number, open_blockers.clone()));
+                    blocked_issues.push((repo.clone(), issue.number, open_blockers.clone()));
                     let _ = app.emit(
                         "orchestrator-blocked",
                         serde_json::json!({
@@ -934,8 +934,9 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
         let _ = app.emit(
             "orchestrator-blocked-list",
             serde_json::json!({
-                "blocked": blocked_issues.iter().map(|(num, blockers)| {
+                "blocked": blocked_issues.iter().map(|(repo, num, blockers)| {
                     serde_json::json!({
+                        "repo": repo,
                         "issue_number": num,
                         "blocked_by": blockers,
                     })
