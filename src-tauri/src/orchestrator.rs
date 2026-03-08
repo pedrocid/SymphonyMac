@@ -111,6 +111,10 @@ pub struct RunConfig {
     pub notification_sound: bool,
     pub max_retries: u32,
     pub retry_backoff_secs: u64,
+    #[serde(default = "default_retry_base_delay")]
+    pub retry_base_delay_secs: u64,
+    #[serde(default = "default_retry_max_backoff")]
+    pub retry_max_backoff_secs: u64,
     pub cleanup_on_failure: bool,
     pub cleanup_on_stop: bool,
     pub workspace_ttl_days: u32,
@@ -137,6 +141,14 @@ fn default_priority_labels() -> Vec<String> {
     ]
 }
 
+fn default_retry_base_delay() -> u64 {
+    10
+}
+
+fn default_retry_max_backoff() -> u64 {
+    300
+}
+
 impl Default for RunConfig {
     fn default() -> Self {
         Self {
@@ -150,6 +162,8 @@ impl Default for RunConfig {
             notification_sound: true,
             max_retries: 1,
             retry_backoff_secs: 10,
+            retry_base_delay_secs: default_retry_base_delay(),
+            retry_max_backoff_secs: default_retry_max_backoff(),
             cleanup_on_failure: false,
             cleanup_on_stop: false,
             workspace_ttl_days: 7,

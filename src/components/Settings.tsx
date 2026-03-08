@@ -31,6 +31,8 @@ export function Settings() {
     notification_sound: true,
     max_retries: 1,
     retry_backoff_secs: 10,
+    retry_base_delay_secs: 10,
+    retry_max_backoff_secs: 300,
     cleanup_on_failure: false,
     cleanup_on_stop: false,
     workspace_ttl_days: 7,
@@ -305,19 +307,37 @@ export function Settings() {
               </div>
 
               <div>
-                <label className="block text-sm text-[#8b949e] mb-2">Retry Backoff (seconds)</label>
+                <label className="block text-sm text-[#8b949e] mb-2">Retry Base Delay (seconds)</label>
                 <input
                   type="number"
                   min={1}
                   max={300}
-                  value={config.retry_backoff_secs}
+                  value={config.retry_base_delay_secs}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value) || 10;
+                    setConfig({ ...config, retry_base_delay_secs: val, retry_backoff_secs: val });
+                  }}
+                  className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
+                />
+                <p className="text-xs text-[#8b949e] mt-1">
+                  Base delay for exponential backoff (delay = base × 2^(attempt−1)).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#8b949e] mb-2">Max Retry Backoff (seconds)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={600}
+                  value={config.retry_max_backoff_secs}
                   onChange={(e) =>
-                    setConfig({ ...config, retry_backoff_secs: parseInt(e.target.value) || 10 })
+                    setConfig({ ...config, retry_max_backoff_secs: parseInt(e.target.value) || 300 })
                   }
                   className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff]"
                 />
                 <p className="text-xs text-[#8b949e] mt-1">
-                  Delay in seconds before retrying a failed stage.
+                  Maximum delay cap in seconds (default: 300s / 5 minutes).
                 </p>
               </div>
 
