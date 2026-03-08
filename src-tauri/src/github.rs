@@ -348,6 +348,26 @@ pub fn get_issue_state(repo: &str, issue_number: u64) -> Result<String, String> 
     Ok(v["state"].as_str().unwrap_or("OPEN").to_string())
 }
 
+/// Check if a GitHub issue is still open.
+/// Returns Ok(true) if open, Ok(false) if closed/not-open, Err on failure.
+pub fn is_issue_open(repo: &str, issue_number: u64) -> Result<bool, String> {
+    let num_str = issue_number.to_string();
+    let output = run_gh(&[
+        "issue",
+        "view",
+        &num_str,
+        "-R",
+        repo,
+        "--json",
+        "state",
+    ])?;
+
+    let v: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| format!("Failed to parse issue state: {}", e))?;
+
+    Ok(v["state"].as_str() == Some("OPEN"))
+}
+
 /// Check if a PR associated with a given issue number is actually merged.
 /// Returns Ok(true) if merged, Ok(false) if still open/closed-not-merged, Err on failure.
 pub fn is_pr_merged_for_issue(repo: &str, issue_number: u64) -> Result<bool, String> {
