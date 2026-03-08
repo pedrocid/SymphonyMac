@@ -86,6 +86,8 @@ pub struct RunConfig {
     pub workspace_ttl_days: u32,
     #[serde(default)]
     pub max_concurrent_by_stage: HashMap<String, usize>,
+    #[serde(default)]
+    pub stage_prompts: HashMap<String, String>,
 }
 
 impl Default for RunConfig {
@@ -105,6 +107,7 @@ impl Default for RunConfig {
             cleanup_on_stop: false,
             workspace_ttl_days: 7,
             max_concurrent_by_stage: HashMap::new(),
+            stage_prompts: HashMap::new(),
         }
     }
 }

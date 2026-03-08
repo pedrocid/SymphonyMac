@@ -51,6 +51,7 @@ pub fn run() {
             agent::start_single_issue,
             agent::stop_agent,
             agent::retry_agent,
+            agent::get_default_prompts,
             orchestrator::get_pipeline_report,
             orchestrator::search_agent_logs,
             orchestrator::export_logs_text,
