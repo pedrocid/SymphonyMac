@@ -2,7 +2,7 @@
 
 A macOS desktop application that orchestrates AI coding agents to automatically implement, review, test, and merge GitHub issues.
 
-Built with Tauri v2 (Rust backend + React frontend).
+Built with Tauri v2 (Rust backend + React frontend). Inspired by [OpenAI's Symphony](https://github.com/openai/symphony), which orchestrates autonomous coding agents against Linear tasks. Symphony Mac brings the same concept to a native macOS app with a visual Kanban board, GitHub Issues integration, and support for both Claude Code and Codex CLI.
 
 ![Dashboard](docs/images/dashboard.png)
 
