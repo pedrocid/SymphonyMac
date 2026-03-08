@@ -491,19 +491,18 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         }
 
         // Emit the full list of currently blocked issues for the UI
-        if !blocked_issues.is_empty() {
-            let _ = app.emit(
-                "orchestrator-blocked-list",
-                serde_json::json!({
-                    "blocked": blocked_issues.iter().map(|(num, blockers)| {
-                        serde_json::json!({
-                            "issue_number": num,
-                            "blocked_by": blockers,
-                        })
-                    }).collect::<Vec<_>>(),
-                }),
-            );
-        }
+        // Always emit so the UI clears stale blocked state when blockers resolve
+        let _ = app.emit(
+            "orchestrator-blocked-list",
+            serde_json::json!({
+                "blocked": blocked_issues.iter().map(|(num, blockers)| {
+                    serde_json::json!({
+                        "issue_number": num,
+                        "blocked_by": blockers,
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+        );
 
         tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
     }

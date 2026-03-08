@@ -232,7 +232,7 @@ pub fn parse_blockers(text: &str) -> Vec<u64> {
         let mut search_from = 0;
         while let Some(pos) = text_lower[search_from..].find(pattern) {
             let abs_pos = search_from + pos + pattern.len();
-            let after = &text[abs_pos..];
+            let after = &text_lower[abs_pos..];
             let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(n) = num_str.parse::<u64>() {
                 if n > 0 && !blockers.contains(&n) {
