@@ -1824,6 +1824,82 @@ pub async fn retry_agent(
 }
 
 #[tauri::command]
+pub async fn retry_agent_from_stage(
+    app: AppHandle,
+    state: tauri::State<'_, SharedState>,
+    run_id: String,
+    from_stage: String,
+) -> Result<String, String> {
+    let target_stage = match from_stage.as_str() {
+        "implement" => PipelineStage::Implement,
+        "code_review" => PipelineStage::CodeReview,
+        "testing" => PipelineStage::Testing,
+        "merge" => PipelineStage::Merge,
+        _ => return Err(format!("Invalid stage: {}", from_stage)),
+    };
+
+    let (repo, issue_number, issue_title) = {
+        let s = state.lock().await;
+        let run = s.runs.get(&run_id).ok_or("Run not found")?;
+        if run.status != AgentStatus::Failed
+            && run.status != AgentStatus::Stopped
+            && run.status != AgentStatus::Interrupted
+        {
+            return Err("Can only retry failed, stopped, or interrupted runs".to_string());
+        }
+        (
+            run.repo.clone(),
+            run.issue_number,
+            run.issue_title.clone(),
+        )
+    };
+
+    // Check if the workspace still exists; fall back to full restart if not
+    let workspace_exists = workspace::workspace_exists(&repo, issue_number);
+    let effective_stage = if workspace_exists {
+        target_stage
+    } else {
+        // Workspace was cleaned up — fall back to full restart from Implement
+        let mut s = state.lock().await;
+        if let Some(run) = s.runs.get_mut(&run_id) {
+            run.logs.push(format!(
+                "[retry] Workspace missing, falling back to full restart from implement (requested: {})",
+                from_stage
+            ));
+        }
+        s.persist();
+        drop(s);
+        let _ = app.emit(
+            "retry-fallback",
+            serde_json::json!({
+                "run_id": &run_id,
+                "requested_stage": &from_stage,
+                "actual_stage": "implement",
+                "reason": "workspace_missing",
+            }),
+        );
+        PipelineStage::Implement
+    };
+
+    // Fetch the issue body from GitHub
+    let body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => issue.body.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
+    launch_agent(
+        app,
+        state.inner().clone(),
+        repo,
+        issue_number,
+        issue_title,
+        body,
+        effective_stage,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn stop_agent(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
