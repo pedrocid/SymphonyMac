@@ -411,7 +411,9 @@ pub(crate) async fn run_agent_process(
         PipelineStage::Merge => match crate::github::is_pr_merged_for_issue(
             &request.spec.repo,
             request.spec.issue_number,
-        ) {
+        )
+        .await
+        {
             Ok(true) => MergeVerification::Verified,
             Ok(false) => MergeVerification::NotMerged,
             Err(error) => {

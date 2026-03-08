@@ -394,48 +394,44 @@ async fn wait_for_stage_slot(
 }
 
 async fn should_skip_next_stage_launch(spec: &StageLaunchSpec) -> bool {
-    let repo = spec.repo.clone();
+    let repo = &spec.repo;
     let issue_number = spec.issue_number;
-    let stage = spec.stage.clone();
+    let stage = &spec.stage;
     let stage_label = stage.to_string();
 
-    tokio::task::spawn_blocking(move || {
-        match crate::github::get_issue_state(&repo, issue_number) {
-            Ok(ref issue_state) if issue_state != "OPEN" => {
+    match crate::github::get_issue_state(repo, issue_number).await {
+        Ok(ref issue_state) if issue_state != "OPEN" => {
+            eprintln!(
+                "Issue #{issue_number} is {issue_state}; skipping stage {stage_label}"
+            );
+            return true;
+        }
+        Err(ref error) => {
+            eprintln!(
+                "Warning: could not re-check issue #{issue_number} state: {error}; proceeding anyway"
+            );
+        }
+        _ => {}
+    }
+
+    if matches!(stage, PipelineStage::Merge) {
+        match crate::github::is_pr_merged_for_issue(repo, issue_number).await {
+            Ok(true) => {
                 eprintln!(
-                    "Issue #{issue_number} is {issue_state}; skipping stage {stage_label}"
+                    "PR for issue #{issue_number} is already merged; skipping Merge stage"
                 );
                 return true;
             }
             Err(ref error) => {
                 eprintln!(
-                    "Warning: could not re-check issue #{issue_number} state: {error}; proceeding anyway"
+                    "Warning: could not check PR merge status for #{issue_number}: {error}; proceeding anyway"
                 );
             }
             _ => {}
         }
+    }
 
-        if matches!(stage, PipelineStage::Merge) {
-            match crate::github::is_pr_merged_for_issue(&repo, issue_number) {
-                Ok(true) => {
-                    eprintln!(
-                        "PR for issue #{issue_number} is already merged; skipping Merge stage"
-                    );
-                    return true;
-                }
-                Err(ref error) => {
-                    eprintln!(
-                        "Warning: could not check PR merge status for #{issue_number}: {error}; proceeding anyway"
-                    );
-                }
-                _ => {}
-            }
-        }
-
-        false
-    })
-    .await
-    .unwrap_or(false)
+    false
 }
 
 async fn collect_latest_stage_runs(
