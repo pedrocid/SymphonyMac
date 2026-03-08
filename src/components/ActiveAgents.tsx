@@ -1,36 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-
-interface AgentRun {
-  id: string;
-  repo: string;
-  issue_number: number;
-  issue_title: string;
-  status: string;
-  stage: string;
-  started_at: string;
-  finished_at: string | null;
-  workspace_path: string;
-  error: string | null;
-  attempt: number;
-  logs: string[];
-  command_display: string | null;
-  agent_type: string;
-  last_log_line: string | null;
-  log_count: number;
-  activity: string | null;
-}
-
-interface OrchestratorStatus {
-  is_running: boolean;
-  repos: string[];
-  runs: AgentRun[];
-  config: { max_concurrent: number };
-  total_completed: number;
-  total_failed: number;
-  active_count: number;
-}
+import type { OrchestratorOverview, RunSummary } from "../types/orchestrator";
 
 interface AgentLogLine {
   run_id: string;
@@ -77,7 +48,7 @@ function formatElapsed(startedAt: string, finishedAt: string | null): string {
   return `${hours}h ${mins % 60}m`;
 }
 
-function getPipelineTotal(runs: AgentRun[], repo: string, issueNumber: number): string {
+function getPipelineTotal(runs: RunSummary[], repo: string, issueNumber: number): string {
   const issueRuns = runs.filter((r) => r.repo === repo && r.issue_number === issueNumber);
   if (issueRuns.length === 0) return "0s";
   const earliest = issueRuns.reduce((min, r) =>
@@ -103,7 +74,7 @@ function formatTimestamp(ts: string): string {
 type LogFilter = "all" | "stdout" | "stderr";
 
 export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => void }) {
-  const [status, setStatus] = useState<OrchestratorStatus | null>(null);
+  const [status, setStatus] = useState<OrchestratorOverview | null>(null);
   const [liveLogs, setLiveLogs] = useState<Record<string, { line: string; ts: string }[]>>({});
   const [now, setNow] = useState(Date.now());
   const [completedTimestamps, setCompletedTimestamps] = useState<number[]>([]);
@@ -145,7 +116,7 @@ export function ActiveAgents({ onViewLogs }: { onViewLogs: (runId: string) => vo
 
   async function loadStatus() {
     try {
-      const result = await invoke<OrchestratorStatus>("get_status");
+      const result = await invoke<OrchestratorOverview>("get_status");
       setStatus(result);
     } catch (_) {}
   }

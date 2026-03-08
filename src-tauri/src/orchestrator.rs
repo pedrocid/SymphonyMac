@@ -67,14 +67,22 @@ impl StageContext {
         parts.push(format!("## Context from {} stage", self.from_stage));
 
         if !self.files_changed.is_empty() {
-            let files_list: String = self.files_changed.iter()
+            let files_list: String = self
+                .files_changed
+                .iter()
                 .take(20) // cap at 20 files to keep concise
                 .map(|f| format!("  - {}", f))
                 .collect::<Vec<_>>()
                 .join("\n");
-            parts.push(format!("Files changed ({} added, {} removed):\n{}", self.lines_added, self.lines_removed, files_list));
+            parts.push(format!(
+                "Files changed ({} added, {} removed):\n{}",
+                self.lines_added, self.lines_removed, files_list
+            ));
             if self.files_changed.len() > 20 {
-                parts.push(format!("  ... and {} more files", self.files_changed.len() - 20));
+                parts.push(format!(
+                    "  ... and {} more files",
+                    self.files_changed.len() - 20
+                ));
             }
         }
 
@@ -141,6 +149,59 @@ pub struct AgentRun {
     /// The next stage to advance to when approval is granted (only set when status is AwaitingApproval)
     #[serde(default)]
     pub pending_next_stage: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunSummary {
+    pub id: String,
+    pub repo: String,
+    pub issue_number: u64,
+    pub issue_title: String,
+    pub status: AgentStatus,
+    pub stage: PipelineStage,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub workspace_path: String,
+    pub error: Option<String>,
+    pub attempt: u32,
+    pub max_retries: u32,
+    pub command_display: Option<String>,
+    pub agent_type: String,
+    pub last_log_line: Option<String>,
+    pub log_count: u32,
+    pub activity: Option<String>,
+    pub last_log_timestamp: Option<String>,
+    #[serde(default)]
+    pub skipped_stages: Vec<String>,
+    #[serde(default)]
+    pub pending_next_stage: Option<String>,
+}
+
+impl From<&AgentRun> for RunSummary {
+    fn from(run: &AgentRun) -> Self {
+        Self {
+            id: run.id.clone(),
+            repo: run.repo.clone(),
+            issue_number: run.issue_number,
+            issue_title: run.issue_title.clone(),
+            status: run.status.clone(),
+            stage: run.stage.clone(),
+            started_at: run.started_at.clone(),
+            finished_at: run.finished_at.clone(),
+            workspace_path: run.workspace_path.clone(),
+            error: run.error.clone(),
+            attempt: run.attempt,
+            max_retries: run.max_retries,
+            command_display: run.command_display.clone(),
+            agent_type: run.agent_type.clone(),
+            last_log_line: run.last_log_line.clone(),
+            log_count: run.log_count,
+            activity: run.activity.clone(),
+            last_log_timestamp: run.last_log_timestamp.clone(),
+            skipped_stages: run.skipped_stages.clone(),
+            pending_next_stage: run.pending_next_stage.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,10 +425,10 @@ fn sort_issues_for_dispatch(issues: &mut [crate::github::Issue], priority_labels
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrchestratorStatus {
+pub struct OrchestratorOverview {
     pub is_running: bool,
     pub repos: Vec<String>,
-    pub runs: Vec<AgentRun>,
+    pub runs: Vec<RunSummary>,
     pub config: RunConfig,
     pub total_completed: usize,
     pub total_failed: usize,
@@ -376,6 +437,41 @@ pub struct OrchestratorStatus {
     pub total_output_tokens: u64,
     pub total_cost_usd: f64,
     pub total_runtime_secs: f64,
+}
+
+fn build_overview(state: &OrchestratorState) -> OrchestratorOverview {
+    let mut runs = Vec::with_capacity(state.runs.len());
+    let mut total_completed = 0;
+    let mut total_failed = 0;
+    let mut active_count = 0;
+
+    for run in state.runs.values() {
+        if run.stage == PipelineStage::Done {
+            total_completed += 1;
+        }
+        if run.status == AgentStatus::Failed {
+            total_failed += 1;
+        }
+        if run.status == AgentStatus::Running || run.status == AgentStatus::Preparing {
+            active_count += 1;
+        }
+
+        runs.push(RunSummary::from(run));
+    }
+
+    OrchestratorOverview {
+        is_running: state.is_running,
+        repos: state.repos.clone(),
+        runs,
+        config: state.config.clone(),
+        total_completed,
+        total_failed,
+        active_count,
+        total_input_tokens: state.total_input_tokens,
+        total_output_tokens: state.total_output_tokens,
+        total_cost_usd: state.total_cost_usd,
+        total_runtime_secs: state.total_runtime_secs,
+    }
 }
 
 pub struct OrchestratorState {
@@ -447,35 +543,9 @@ impl OrchestratorState {
 #[tauri::command]
 pub async fn get_status(
     state: tauri::State<'_, SharedState>,
-) -> Result<OrchestratorStatus, String> {
+) -> Result<OrchestratorOverview, String> {
     let s = state.lock().await;
-    let runs: Vec<AgentRun> = s.runs.values().cloned().collect();
-    let total_completed = runs
-        .iter()
-        .filter(|r| r.stage == PipelineStage::Done)
-        .count();
-    let total_failed = runs
-        .iter()
-        .filter(|r| r.status == AgentStatus::Failed)
-        .count();
-    let active_count = runs
-        .iter()
-        .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
-        .count();
-
-    Ok(OrchestratorStatus {
-        is_running: s.is_running,
-        repos: s.repos.clone(),
-        runs,
-        config: s.config.clone(),
-        total_completed,
-        total_failed,
-        active_count,
-        total_input_tokens: s.total_input_tokens,
-        total_output_tokens: s.total_output_tokens,
-        total_cost_usd: s.total_cost_usd,
-        total_runtime_secs: s.total_runtime_secs,
-    })
+    Ok(build_overview(&s))
 }
 
 #[tauri::command]
@@ -632,7 +702,10 @@ pub async fn resume_pipeline(
             .ok_or_else(|| format!("Run {} not found", run_id))?;
 
         if run.status != AgentStatus::Interrupted {
-            return Err(format!("Run {} is not interrupted (status: {:?})", run_id, run.status));
+            return Err(format!(
+                "Run {} is not interrupted (status: {:?})",
+                run_id, run.status
+            ));
         }
 
         let info = (
@@ -653,10 +726,11 @@ pub async fn resume_pipeline(
     };
 
     // Fetch the issue body and labels from GitHub so the prompt has full context
-    let (issue_body, issue_labels) = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
-        Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
-        Err(_) => (String::new(), stored_labels),
-    };
+    let (issue_body, issue_labels) =
+        match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+            Ok(issue) => (issue.body.unwrap_or_default(), issue.labels),
+            Err(_) => (String::new(), stored_labels),
+        };
 
     crate::agent::launch_agent(
         app,
@@ -745,8 +819,7 @@ async fn reconcile_active_runs(app: &AppHandle, state: &SharedState) {
             );
 
             if should_cleanup {
-                let _ =
-                    crate::workspace::cleanup_workspace(repo, *issue_number, &hooks);
+                let _ = crate::workspace::cleanup_workspace(repo, *issue_number, &hooks);
             }
         }
     }
@@ -756,7 +829,15 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
     let mut all_processed_notified = false;
 
     loop {
-        let (should_stop, poll_interval, max_concurrent, label, stage_limits, priority_labels, skip_labels) = {
+        let (
+            should_stop,
+            poll_interval,
+            max_concurrent,
+            label,
+            stage_limits,
+            priority_labels,
+            skip_labels,
+        ) = {
             let s = state.lock().await;
             (
                 s.stop_flag,
@@ -791,25 +872,22 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
         let mut had_fetch_error = false;
 
         for repo in &repos {
-            let issues = match github::list_issues(
-                repo.clone(),
-                Some("open".to_string()),
-                label.clone(),
-            )
-            .await
-            {
-                Ok(issues) => issues,
-                Err(e) => {
-                    let _ = app.emit(
-                        "orchestrator-error",
-                        serde_json::json!({
-                            "error": format!("Failed to fetch issues from {}: {}", repo, e),
-                        }),
-                    );
-                    had_fetch_error = true;
-                    continue;
-                }
-            };
+            let issues =
+                match github::list_issues(repo.clone(), Some("open".to_string()), label.clone())
+                    .await
+                {
+                    Ok(issues) => issues,
+                    Err(e) => {
+                        let _ = app.emit(
+                            "orchestrator-error",
+                            serde_json::json!({
+                                "error": format!("Failed to fetch issues from {}: {}", repo, e),
+                            }),
+                        );
+                        had_fetch_error = true;
+                        continue;
+                    }
+                };
 
             for issue in issues {
                 all_issues.push((repo.clone(), issue));
@@ -883,7 +961,11 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
                 .filter(|r| r.stage == PipelineStage::Done && r.status == AgentStatus::Completed)
                 .map(|r| (r.repo.clone(), r.issue_number))
                 .collect();
-            let any: Vec<(String, u64)> = s.runs.values().map(|r| (r.repo.clone(), r.issue_number)).collect();
+            let any: Vec<(String, u64)> = s
+                .runs
+                .values()
+                .map(|r| (r.repo.clone(), r.issue_number))
+                .collect();
             (working, done, any)
         };
 
@@ -958,11 +1040,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
                     start = next_pipeline_stage(&PipelineStage::Implement, &skipped)
                         .unwrap_or(PipelineStage::Merge);
                 }
-                (
-                    start,
-                    pr.title.clone(),
-                    pr.body.clone().unwrap_or_default(),
-                )
+                (start, pr.title.clone(), pr.body.clone().unwrap_or_default())
             } else {
                 // No PR → start at Implement (always required)
                 (
@@ -1031,7 +1109,11 @@ async fn poll_loop(app: AppHandle, state: SharedState, repos: Vec<String>) {
 /// Check whether an approval gate is enabled for the given stage.
 pub fn is_gate_enabled(config: &RunConfig, stage: &PipelineStage) -> bool {
     let stage_name = stage.to_string();
-    config.approval_gates.get(&stage_name).copied().unwrap_or(false)
+    config
+        .approval_gates
+        .get(&stage_name)
+        .copied()
+        .unwrap_or(false)
 }
 
 /// Check whether an additional agent for the given stage can be launched
@@ -1073,6 +1155,7 @@ pub fn can_launch_stage(state: &OrchestratorState, stage: &PipelineStage) -> boo
 mod tests {
     use super::*;
     use crate::github::Issue;
+    use std::collections::HashMap;
 
     fn make_issue(number: u64, labels: Vec<&str>, created_at: &str) -> Issue {
         Issue {
@@ -1086,6 +1169,102 @@ mod tests {
             created_at: created_at.to_string(),
             updated_at: String::new(),
         }
+    }
+
+    fn make_run(id: &str, status: AgentStatus, stage: PipelineStage) -> AgentRun {
+        AgentRun {
+            id: id.to_string(),
+            repo: "pedrocid/SymphonyMac".to_string(),
+            issue_number: 55,
+            issue_title: "Refactor status API".to_string(),
+            status,
+            stage,
+            started_at: "2026-03-08T09:00:00Z".to_string(),
+            finished_at: Some("2026-03-08T09:10:00Z".to_string()),
+            logs: Vec::new(),
+            workspace_path: "/tmp/symphony-issue-55".to_string(),
+            error: None,
+            attempt: 2,
+            max_retries: 3,
+            lines_added: 42,
+            lines_removed: 7,
+            files_modified_list: vec!["src-tauri/src/orchestrator.rs".to_string()],
+            report: None,
+            command_display: Some("codex exec".to_string()),
+            agent_type: "codex".to_string(),
+            last_log_line: Some("last summary line".to_string()),
+            log_count: 2048,
+            activity: Some("Editing files".to_string()),
+            last_log_timestamp: Some("2026-03-08T09:09:59Z".to_string()),
+            input_tokens: 1200,
+            output_tokens: 800,
+            cost_usd: 0.34,
+            issue_labels: vec!["enhancement".to_string()],
+            skipped_stages: vec!["testing".to_string()],
+            stage_context: None,
+            pending_next_stage: Some("merge".to_string()),
+        }
+    }
+
+    fn make_state(run: AgentRun) -> OrchestratorState {
+        let mut runs = HashMap::new();
+        runs.insert(run.id.clone(), run);
+
+        OrchestratorState {
+            is_running: true,
+            repos: vec!["pedrocid/SymphonyMac".to_string()],
+            runs,
+            config: RunConfig::default(),
+            agent_pids: HashMap::new(),
+            stop_flag: false,
+            total_input_tokens: 1200,
+            total_output_tokens: 800,
+            total_cost_usd: 0.34,
+            total_runtime_secs: 600.0,
+        }
+    }
+
+    #[test]
+    fn test_overview_omits_large_run_buffers() {
+        let summary_only_run = make_run("run-55", AgentStatus::Running, PipelineStage::Implement);
+
+        let mut heavy_run = summary_only_run.clone();
+        heavy_run.logs = (0..2048).map(|i| format!("log line {}", i)).collect();
+        heavy_run.report = Some(crate::report::PipelineReport {
+            issue_number: 55,
+            issue_title: "Refactor status API".to_string(),
+            repo: "pedrocid/SymphonyMac".to_string(),
+            total_duration_secs: 600,
+            total_duration_display: "10m".to_string(),
+            stages: vec![],
+            pr_number: Some(123),
+            pr_url: Some("https://github.com/pedrocid/SymphonyMac/pull/123".to_string()),
+            issue_url: "https://github.com/pedrocid/SymphonyMac/issues/55".to_string(),
+            code_review_summary: "large review summary".repeat(20),
+            testing_summary: "large testing summary".repeat(20),
+            total_input_tokens: 1200,
+            total_output_tokens: 800,
+            total_cost_usd: 0.34,
+        });
+        heavy_run.stage_context = Some(StageContext {
+            from_stage: "implement".to_string(),
+            files_changed: vec!["src-tauri/src/orchestrator.rs".to_string()],
+            lines_added: 42,
+            lines_removed: 7,
+            pr_number: Some(123),
+            branch_name: Some("symphony/issue-55".to_string()),
+            summary: "context summary".repeat(20),
+        });
+
+        let summary_value =
+            serde_json::to_value(build_overview(&make_state(summary_only_run))).unwrap();
+        let heavy_value = serde_json::to_value(build_overview(&make_state(heavy_run))).unwrap();
+        let run_json = &heavy_value["runs"][0];
+
+        assert_eq!(summary_value, heavy_value);
+        assert!(run_json.get("logs").is_none());
+        assert!(run_json.get("report").is_none());
+        assert!(run_json.get("stage_context").is_none());
     }
 
     #[test]
@@ -1120,7 +1299,11 @@ mod tests {
     fn test_priority_rank_multiple_labels_uses_highest() {
         let labels = default_priority_labels();
         // Issue has both low and critical labels — should use critical (rank 0), not low (rank 3)
-        let issue = make_issue(1, vec!["priority:low", "priority:critical"], "2024-01-01T00:00:00Z");
+        let issue = make_issue(
+            1,
+            vec!["priority:low", "priority:critical"],
+            "2024-01-01T00:00:00Z",
+        );
         assert_eq!(issue_priority_rank(&issue, &labels), 0);
     }
 
