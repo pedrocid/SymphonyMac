@@ -154,17 +154,29 @@ fn detect_activity(line: &str) -> Option<String> {
     let lower = line.to_lowercase();
     if lower.contains("reading file") || lower.contains("read(") || lower.contains("cat ") {
         Some("Reading files".to_string())
-    } else if lower.contains("editing file") || lower.contains("edit(") || lower.contains("write(") || lower.contains("sed ") {
+    } else if lower.contains("editing file")
+        || lower.contains("edit(")
+        || lower.contains("write(")
+        || lower.contains("sed ")
+    {
         Some("Editing files".to_string())
     } else if lower.contains("bash(") || lower.contains("running command") || lower.contains("$ ") {
         Some("Running command".to_string())
     } else if lower.contains("grep(") || lower.contains("glob(") || lower.contains("searching") {
         Some("Searching code".to_string())
-    } else if lower.contains("git commit") || lower.contains("git push") || lower.contains("gh pr") {
+    } else if lower.contains("git commit") || lower.contains("git push") || lower.contains("gh pr")
+    {
         Some("Git operations".to_string())
-    } else if lower.contains("npm test") || lower.contains("cargo test") || lower.contains("pytest") || lower.contains("go test") {
+    } else if lower.contains("npm test")
+        || lower.contains("cargo test")
+        || lower.contains("pytest")
+        || lower.contains("go test")
+    {
         Some("Running tests".to_string())
-    } else if lower.contains("compiling") || lower.contains("building") || lower.contains("npm run build") {
+    } else if lower.contains("compiling")
+        || lower.contains("building")
+        || lower.contains("npm run build")
+    {
         Some("Building".to_string())
     } else if lower.contains("analyzing") || lower.contains("reviewing") {
         Some("Analyzing code".to_string())
@@ -177,8 +189,14 @@ fn build_command_args(config: &RunConfig, prompt: &str) -> (String, Vec<String>)
     match config.agent_type.as_str() {
         "codex" => {
             let mut args = vec!["exec".to_string()];
+            // Symphony's issue pipeline does not use the paper MCP server, and some
+            // local Codex setups point it at a dead localhost endpoint.
+            args.push("-c".to_string());
+            args.push("mcp_servers.paper.enabled=false".to_string());
             if config.auto_approve {
-                args.push("--full-auto".to_string());
+                // Codex's current --full-auto mode uses a sandbox profile that blocks
+                // networked gh operations needed for this pipeline (PR create/comment/merge).
+                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
             }
             // Allow Codex sandbox to read gh auth config
             if let Some(home) = dirs::home_dir() {
@@ -550,8 +568,7 @@ async fn run_agent_process(
 
     // After agent completes successfully, capture actual diff stats from git
     if succeeded {
-        let (diff_added, diff_removed, diff_files) =
-            capture_diff_stats(&workspace_path).await;
+        let (diff_added, diff_removed, diff_files) = capture_diff_stats(&workspace_path).await;
         let mut s = state.lock().await;
         if let Some(run) = s.runs.get_mut(&run_id) {
             run.lines_added = diff_added;
@@ -948,9 +965,7 @@ async fn update_dock_badge(state: &SharedState) {
     let active = s
         .runs
         .values()
-        .filter(|r| {
-            r.status == AgentStatus::Running || r.status == AgentStatus::Preparing
-        })
+        .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
         .count();
     crate::dock::set_badge_count(active);
 }

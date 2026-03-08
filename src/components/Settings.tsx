@@ -162,7 +162,7 @@ export function Settings() {
                   <p className="text-xs text-[#8b949e] mt-0.5">
                     {config.agent_type === "claude"
                       ? "Uses --dangerously-skip-permissions"
-                      : "Uses --full-auto mode"}
+                      : "Uses --dangerously-bypass-approvals-and-sandbox"}
                   </p>
                 </div>
                 <button
