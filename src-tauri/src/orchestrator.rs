@@ -421,6 +421,83 @@ pub async fn get_pipeline_report(
     }
 }
 
+/// Reconcile active runs against current GitHub issue state.
+/// Stops agents for issues that have been closed externally.
+async fn reconcile_active_runs(app: &AppHandle, state: &SharedState, repo: &str) {
+    // Collect active runs' info while holding the lock briefly
+    let active_runs: Vec<(String, u64)> = {
+        let s = state.lock().await;
+        s.runs
+            .values()
+            .filter(|r| r.status == AgentStatus::Running || r.status == AgentStatus::Preparing)
+            .map(|r| (r.id.clone(), r.issue_number))
+            .collect()
+    };
+
+    if active_runs.is_empty() {
+        return;
+    }
+
+    // Deduplicate issue numbers to avoid redundant API calls
+    let mut checked_issues: std::collections::HashMap<u64, bool> =
+        std::collections::HashMap::new();
+
+    for (run_id, issue_number) in &active_runs {
+        let is_open = if let Some(&cached) = checked_issues.get(issue_number) {
+            cached
+        } else {
+            let open = github::is_issue_open(repo, *issue_number).unwrap_or(true);
+            checked_issues.insert(*issue_number, open);
+            open
+        };
+
+        if !is_open {
+            let _ = app.emit(
+                "orchestrator-reconcile",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "issue_number": issue_number,
+                    "reason": "issue_closed",
+                }),
+            );
+
+            // Stop the agent: kill process, update state, optionally clean up
+            let mut s = state.lock().await;
+            if let Some(pid) = s.agent_pids.remove(run_id) {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            }
+            if let Some(run) = s.runs.get_mut(run_id) {
+                run.status = AgentStatus::Stopped;
+                run.finished_at = Some(Utc::now().to_rfc3339());
+                run.logs.push(format!(
+                    "[reconciler] Stopped: issue #{} was closed externally",
+                    issue_number
+                ));
+                run.error = Some(format!("Issue #{} closed externally", issue_number));
+            }
+            let should_cleanup = s.config.cleanup_on_stop;
+            let hooks = s.config.hooks.clone();
+            drop(s);
+
+            let _ = app.emit(
+                "agent-status-changed",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "status": "stopped",
+                    "reason": "issue_closed",
+                }),
+            );
+
+            if should_cleanup {
+                let _ =
+                    crate::workspace::cleanup_workspace(repo, *issue_number, &hooks);
+            }
+        }
+    }
+}
+
 async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
     let mut all_processed_notified = false;
 
@@ -440,6 +517,9 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
         if should_stop {
             break;
         }
+
+        // ---- RECONCILIATION: Stop agents for externally-closed issues ----
+        reconcile_active_runs(&app, &state, &repo).await;
 
         let _ = app.emit(
             "orchestrator-poll",
