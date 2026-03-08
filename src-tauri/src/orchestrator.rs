@@ -470,7 +470,7 @@ pub async fn resume_pipeline(
     state: tauri::State<'_, SharedState>,
     run_id: String,
 ) -> Result<(), String> {
-    let (repo, issue_number, issue_title, issue_body, resume_stage) = {
+    let (repo, issue_number, issue_title, resume_stage) = {
         let mut s = state.lock().await;
         let run = s
             .runs
@@ -485,7 +485,6 @@ pub async fn resume_pipeline(
             run.repo.clone(),
             run.issue_number,
             run.issue_title.clone(),
-            String::new(), // issue body not stored in run; agent will fetch from GitHub
             run.stage.clone(),
         );
 
@@ -496,6 +495,12 @@ pub async fn resume_pipeline(
         }
         s.persist();
         info
+    };
+
+    // Fetch the issue body from GitHub so the prompt has full context
+    let issue_body = match crate::github::get_issue_detail(repo.clone(), issue_number).await {
+        Ok(issue) => issue.body.unwrap_or_default(),
+        Err(_) => String::new(),
     };
 
     crate::agent::launch_agent(

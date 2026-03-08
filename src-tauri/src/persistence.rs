@@ -67,12 +67,25 @@ pub fn load_state() -> Option<PersistedState> {
     let mut persisted: PersistedState = serde_json::from_str(&data).ok()?;
 
     // Mark any in-progress runs as Interrupted since the app restarted
+    let mut modified = false;
     for run in persisted.runs.values_mut() {
         if run.status == AgentStatus::Running || run.status == AgentStatus::Preparing {
             run.status = AgentStatus::Interrupted;
             run.error = Some("App was restarted while this run was in progress".to_string());
             if run.finished_at.is_none() {
                 run.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+            modified = true;
+        }
+    }
+
+    // Persist the updated state so Interrupted status is saved to disk
+    if modified {
+        let path = state_file_path();
+        if let Ok(json) = serde_json::to_string_pretty(&persisted) {
+            let tmp_path = path.with_extension("json.tmp");
+            if fs::write(&tmp_path, &json).is_ok() {
+                let _ = fs::rename(&tmp_path, &path);
             }
         }
     }
