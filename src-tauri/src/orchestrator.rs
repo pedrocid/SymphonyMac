@@ -421,6 +421,7 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
 
         // ---- STEP 4: Dispatch issues ----
         let mut used_slots = 0usize;
+        let mut blocked_issues: Vec<(u64, Vec<u64>)> = Vec::new();
 
         for issue in &issues {
             if used_slots >= available_slots {
@@ -433,6 +434,24 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 || has_any_run.contains(&issue.number)
             {
                 continue;
+            }
+
+            // Check for blockers in issue body
+            let body_text = issue.body.as_deref().unwrap_or("");
+            let blocker_nums = github::parse_blockers(body_text);
+            if !blocker_nums.is_empty() {
+                let open_blockers = github::check_blockers_open(&repo, &blocker_nums);
+                if !open_blockers.is_empty() {
+                    blocked_issues.push((issue.number, open_blockers.clone()));
+                    let _ = app.emit(
+                        "orchestrator-blocked",
+                        serde_json::json!({
+                            "issue_number": issue.number,
+                            "blocked_by": open_blockers,
+                        }),
+                    );
+                    continue;
+                }
             }
 
             // Decide which stage to start at
@@ -470,6 +489,20 @@ async fn poll_loop(app: AppHandle, state: SharedState, repo: String) {
                 used_slots += 1;
             }
         }
+
+        // Emit the full list of currently blocked issues for the UI
+        // Always emit so the UI clears stale blocked state when blockers resolve
+        let _ = app.emit(
+            "orchestrator-blocked-list",
+            serde_json::json!({
+                "blocked": blocked_issues.iter().map(|(num, blockers)| {
+                    serde_json::json!({
+                        "issue_number": num,
+                        "blocked_by": blockers,
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+        );
 
         tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
     }

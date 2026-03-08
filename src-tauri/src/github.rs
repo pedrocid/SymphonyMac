@@ -214,6 +214,69 @@ pub async fn list_open_prs(repo: String) -> Result<Vec<PullRequest>, String> {
     Ok(prs)
 }
 
+/// Parse blocker references from issue body text.
+/// Looks for patterns like "blocked by #X", "depends on #X", "requires #X".
+pub fn parse_blockers(text: &str) -> Vec<u64> {
+    let text_lower = text.to_lowercase();
+    let mut blockers = Vec::new();
+    let patterns = [
+        "blocked by #",
+        "depends on #",
+        "requires #",
+        "waiting on #",
+        "waiting for #",
+        "after #",
+    ];
+
+    for pattern in &patterns {
+        let mut search_from = 0;
+        while let Some(pos) = text_lower[search_from..].find(pattern) {
+            let abs_pos = search_from + pos + pattern.len();
+            let after = &text_lower[abs_pos..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                if n > 0 && !blockers.contains(&n) {
+                    blockers.push(n);
+                }
+            }
+            search_from = abs_pos;
+        }
+    }
+
+    blockers
+}
+
+/// Check which of the given blocker issue numbers are still open in the repo.
+/// Returns the list of issue numbers that are still open.
+pub fn check_blockers_open(repo: &str, blocker_numbers: &[u64]) -> Vec<u64> {
+    let mut open_blockers = Vec::new();
+    for &num in blocker_numbers {
+        let num_str = num.to_string();
+        match run_gh(&[
+            "issue",
+            "view",
+            &num_str,
+            "-R",
+            repo,
+            "--json",
+            "state",
+        ]) {
+            Ok(output) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&output) {
+                    if v["state"].as_str() == Some("OPEN") {
+                        open_blockers.push(num);
+                    }
+                }
+            }
+            Err(_) => {
+                // If we can't check, assume it's still blocking to be safe
+                open_blockers.push(num);
+            }
+        }
+    }
+    open_blockers
+}
+
 /// Parse "Closes #123" or "Fixes #123" from PR body
 fn parse_closes_issue(body: &str) -> Option<u64> {
     let body_lower = body.to_lowercase();
@@ -354,4 +417,106 @@ pub async fn get_issue_detail(repo: String, number: u64) -> Result<Issue, String
         created_at: v["createdAt"].as_str().unwrap_or("").to_string(),
         updated_at: v["updatedAt"].as_str().unwrap_or("").to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_blockers_blocked_by() {
+        let text = "This issue is blocked by #10 and blocked by #20";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_parse_blockers_depends_on() {
+        let text = "Depends on #5";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![5]);
+    }
+
+    #[test]
+    fn test_parse_blockers_requires() {
+        let text = "This requires #42 to be done first";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![42]);
+    }
+
+    #[test]
+    fn test_parse_blockers_waiting_on() {
+        let text = "Waiting on #3";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![3]);
+    }
+
+    #[test]
+    fn test_parse_blockers_waiting_for() {
+        let text = "Waiting for #7";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![7]);
+    }
+
+    #[test]
+    fn test_parse_blockers_after() {
+        let text = "Should be done after #15";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![15]);
+    }
+
+    #[test]
+    fn test_parse_blockers_case_insensitive() {
+        let text = "BLOCKED BY #99 and Depends On #88";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![99, 88]);
+    }
+
+    #[test]
+    fn test_parse_blockers_no_duplicates() {
+        let text = "Blocked by #10, also depends on #10";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![10]);
+    }
+
+    #[test]
+    fn test_parse_blockers_empty_text() {
+        let blockers = parse_blockers("");
+        assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_blockers_no_matches() {
+        let text = "This is a regular issue with no blockers";
+        let blockers = parse_blockers(text);
+        assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_blockers_multiple_patterns() {
+        let text = "Blocked by #1, depends on #2, requires #3, waiting on #4, waiting for #5, after #6";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_parse_blockers_unicode_text() {
+        let text = "🚫 Blocked by #42 — needs résumé feature first";
+        let blockers = parse_blockers(text);
+        assert_eq!(blockers, vec![42]);
+    }
+
+    #[test]
+    fn test_parse_blockers_invalid_number() {
+        let text = "Blocked by #abc";
+        let blockers = parse_blockers(text);
+        assert!(blockers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_blockers_zero_ignored() {
+        let text = "Blocked by #0";
+        let blockers = parse_blockers(text);
+        assert!(blockers.is_empty());
+    }
 }

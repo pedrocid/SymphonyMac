@@ -54,6 +54,7 @@ type KanbanCard = {
   elapsed?: string;
   attempt?: number;
   maxRetries?: number;
+  blockedBy?: number[];
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -67,16 +68,28 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   const [status, setStatus] = useState<OrchestratorStatus | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [blockedMap, setBlockedMap] = useState<Map<number, number[]>>(new Map());
 
   useEffect(() => {
     loadStatus();
     const interval = setInterval(loadStatus, 3000);
     const unlistenStatus = listen("agent-status-changed", () => loadStatus());
     const unlistenOrch = listen("orchestrator-status", () => loadStatus());
+    const unlistenBlocked = listen<{ blocked: { issue_number: number; blocked_by: number[] }[] }>(
+      "orchestrator-blocked-list",
+      (event) => {
+        const newMap = new Map<number, number[]>();
+        for (const entry of event.payload.blocked) {
+          newMap.set(entry.issue_number, entry.blocked_by);
+        }
+        setBlockedMap(newMap);
+      }
+    );
     return () => {
       clearInterval(interval);
       unlistenStatus.then((f) => f());
       unlistenOrch.then((f) => f());
+      unlistenBlocked.then((f) => f());
     };
   }, []);
 
@@ -163,6 +176,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
   // Determine which column each issue belongs to based on its pipeline state
   const openCards: KanbanCard[] = [];
+  const blockedCards: KanbanCard[] = [];
   const implementCards: KanbanCard[] = [];
   const reviewCards: KanbanCard[] = [];
   const testingCards: KanbanCard[] = [];
@@ -237,7 +251,12 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
   for (const issue of issues) {
     if (processedIssues.has(issue.number)) continue;
     if (issue.state === "OPEN") {
-      openCards.push(makeCard(issue, null));
+      const blockers = blockedMap.get(issue.number);
+      if (blockers && blockers.length > 0) {
+        blockedCards.push({ ...makeCard(issue, null), blockedBy: blockers });
+      } else {
+        openCards.push(makeCard(issue, null));
+      }
     } else {
       doneCards.push(makeCard(issue, null));
     }
@@ -245,6 +264,7 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
 
   const columns = [
     { id: "open", title: "Open", color: "#8b949e", items: openCards },
+    { id: "blocked", title: "Blocked", color: "#da3633", items: blockedCards },
     { id: "implement", title: "In Progress", color: "#d29922", items: implementCards },
     { id: "review", title: "Code Review", color: "#bc8cff", items: reviewCards },
     { id: "testing", title: "Testing", color: "#58a6ff", items: testingCards },
@@ -331,6 +351,15 @@ export function Dashboard({ onViewLogs, onViewReport }: { onViewLogs: (runId: st
                       <div className="flex items-center gap-1.5 mb-2">
                         <span className="w-1.5 h-1.5 bg-[#484f58] rounded-full animate-pulse" />
                         <span className="text-xs text-[#484f58]">Starting next stage...</span>
+                      </div>
+                    )}
+
+                    {/* Blocked by */}
+                    {card.blockedBy && card.blockedBy.length > 0 && (
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className="text-xs text-[#da3633]">
+                          Blocked by {card.blockedBy.map((n) => `#${n}`).join(", ")}
+                        </span>
                       </div>
                     )}
 
