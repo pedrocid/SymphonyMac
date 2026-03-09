@@ -536,8 +536,7 @@ pub async fn cleanup_all_workspaces() -> Result<u32, String> {
     Ok(removed)
 }
 
-/// Validate that a path is a valid git repository and extract its remote info.
-/// Returns the GitHub full_name (e.g. "owner/repo") if detectable, or the dir name.
+/// Validate that a path is a valid git repository backed by a GitHub origin.
 #[tauri::command]
 pub async fn validate_local_repo(path: String) -> Result<LocalRepoInfo, String> {
     let p = std::path::Path::new(&path);
@@ -556,22 +555,21 @@ pub async fn validate_local_repo(path: String) -> Result<LocalRepoInfo, String> 
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
-    let mut full_name = None;
-    if output.status.success() {
-        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        full_name = extract_github_full_name(&url);
+    if !output.status.success() {
+        return Err(
+            "Repository must have an 'origin' remote that points to GitHub".to_string(),
+        );
     }
 
-    let name = full_name.unwrap_or_else(|| {
-        p.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let full_name = extract_github_full_name(&url).ok_or_else(|| {
+        "Repository origin must be a GitHub remote such as git@github.com:owner/repo.git"
             .to_string()
-    });
+    })?;
 
     Ok(LocalRepoInfo {
-        path: path.clone(),
-        full_name: name,
+        path,
+        full_name,
     })
 }
 
@@ -608,6 +606,28 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn init_git_repo(path: &std::path::Path, origin_url: &str) {
+        let init = Command::new(crate::paths::resolve("git"))
+            .env("PATH", crate::paths::build_path_env())
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "git init failed: {:?}", init);
+
+        let add_remote = Command::new(crate::paths::resolve("git"))
+            .env("PATH", crate::paths::build_path_env())
+            .args(["remote", "add", "origin", origin_url])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            add_remote.status.success(),
+            "git remote add failed: {:?}",
+            add_remote
+        );
+    }
 
     #[test]
     fn test_execute_hook_success() {
@@ -787,5 +807,29 @@ mod tests {
             extract_github_full_name("https://gitlab.com/owner/repo.git"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn test_validate_local_repo_accepts_github_remote() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path(), "git@github.com:owner/repo.git");
+
+        let result = validate_local_repo(tmp.path().to_string_lossy().to_string()).await;
+
+        assert!(result.is_ok());
+        let repo = result.unwrap();
+        assert_eq!(repo.full_name, "owner/repo");
+        assert_eq!(repo.path, tmp.path().to_string_lossy().to_string());
+    }
+
+    #[tokio::test]
+    async fn test_validate_local_repo_rejects_non_github_remote() {
+        let tmp = TempDir::new().unwrap();
+        init_git_repo(tmp.path(), "https://gitlab.com/owner/repo.git");
+
+        let result = validate_local_repo(tmp.path().to_string_lossy().to_string()).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("GitHub remote"));
     }
 }

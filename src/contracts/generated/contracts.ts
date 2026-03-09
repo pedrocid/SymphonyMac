@@ -113,7 +113,13 @@ stage_skip_labels: { [key in string]: Array<string> },
  * advancing to the next stage. Keys are stage names (implement, code_review,
  * testing, merge). Default: all false (fully automatic).
  */
-approval_gates: { [key in string]: boolean }, };
+approval_gates: { [key in string]: boolean }, 
+/**
+ * Local repository paths. Keys are repo full names (e.g. "owner/repo"),
+ * values are absolute paths to local git repositories. When a repo has a
+ * local path configured, Symphony uses `git worktree add` instead of cloning.
+ */
+local_repos: { [key in string]: string }, };
 
 export type RunSummary = { id: string, repo: string, issue_number: number, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, workspace_path: string, error: string | null, attempt: number, max_retries: number, command_display: string | null, agent_type: string, last_log_line: string | null, log_count: number, activity: string | null, last_log_timestamp: string | null, skipped_stages: Array<string>, pending_next_stage: string | null, };
 
@@ -153,4 +159,4 @@ summary: string, };
 
 export type StageReport = { name: string, status: string, duration_secs: number | null, duration_display: string, files_modified: Array<string>, lines_added: number, lines_removed: number, commands_executed: Array<string>, summary: string, attempt: number, };
 
-export type WorkspaceInfo = { name: string, path: string, size_bytes: number, size_display: string, modified_at: string, age_days: number, };
+export type WorkspaceInfo = { name: string, path: string, size_bytes: number, size_display: string, modified_at: string, age_days: number, is_worktree: boolean, };

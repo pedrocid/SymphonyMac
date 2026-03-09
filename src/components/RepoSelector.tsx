@@ -32,46 +32,50 @@ export function RepoSelector({
   async function loadRepos() {
     setLoading(true);
     setError(null);
-    try {
-      const [ghRepos, config] = await Promise.all([
-        invoke<Repo[]>("list_repos", { filter: null }),
-        getConfig(),
-      ]);
+    const [ghReposResult, configResult] = await Promise.allSettled([
+      invoke<Repo[]>("list_repos", { filter: null }),
+      getConfig(),
+    ]);
 
-      const localRepos = config.local_repos || {};
-      const localFullNames = new Set(Object.keys(localRepos));
+    if (ghReposResult.status !== "fulfilled") {
+      setError(String(ghReposResult.reason));
+      setRepos([]);
+      setLoading(false);
+      return;
+    }
 
-      // Build merged list: local repos first, then GitHub repos (deduped)
-      const entries: RepoEntry[] = [];
+    const ghRepos = ghReposResult.value;
+    const localRepos =
+      configResult.status === "fulfilled" ? (configResult.value.local_repos ?? {}) : {};
+    const localFullNames = new Set(Object.keys(localRepos));
 
-      for (const [fullName, path] of Object.entries(localRepos)) {
-        const ghMatch = ghRepos.find((r) => r.full_name === fullName);
+    // Build merged list: local repos first, then GitHub repos (deduped).
+    const entries: RepoEntry[] = [];
+
+    for (const [fullName, path] of Object.entries(localRepos)) {
+      const ghMatch = ghRepos.find((repo) => repo.full_name === fullName);
+      entries.push({
+        full_name: fullName,
+        description: ghMatch?.description ?? path,
+        is_private: ghMatch?.is_private,
+        is_local: true,
+        local_path: path,
+      });
+    }
+
+    for (const repo of ghRepos) {
+      if (!localFullNames.has(repo.full_name)) {
         entries.push({
-          full_name: fullName,
-          description: ghMatch?.description ?? path,
-          is_private: ghMatch?.is_private,
-          is_local: true,
-          local_path: path,
+          full_name: repo.full_name,
+          description: repo.description,
+          is_private: repo.is_private,
+          is_local: false,
         });
       }
-
-      for (const repo of ghRepos) {
-        if (!localFullNames.has(repo.full_name)) {
-          entries.push({
-            full_name: repo.full_name,
-            description: repo.description,
-            is_private: repo.is_private,
-            is_local: false,
-          });
-        }
-      }
-
-      setRepos(entries);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
     }
+
+    setRepos(entries);
+    setLoading(false);
   }
 
   const filtered = repos.filter((r) =>
