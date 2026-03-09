@@ -30,6 +30,7 @@ export interface RunConfig {
   stage_skip_labels: Record<string, string[]>;
   approval_gates: Record<string, boolean>;
   local_repos: Record<string, string>;
+  custom_agent_command: string;
 }
 
 export interface AgentRun {

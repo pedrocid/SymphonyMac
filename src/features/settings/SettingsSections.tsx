@@ -86,7 +86,37 @@ export function AgentConfigurationSection({
             >
               Codex
             </button>
+            <button
+              onClick={() => setConfig((currentConfig) => ({ ...currentConfig, agent_type: "custom" }))}
+              className={`flex-1 p-3 rounded-lg border text-sm font-medium transition-colors ${
+                config.agent_type === "custom"
+                  ? "bg-[#d2a8ff15] border-[#d2a8ff] text-[#d2a8ff]"
+                  : "bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]"
+              }`}
+            >
+              Custom
+            </button>
           </div>
+          {config.agent_type === "custom" && (
+            <div className="mt-3">
+              <label className="block text-sm text-[#8b949e] mb-1">Command template</label>
+              <input
+                type="text"
+                value={config.custom_agent_command}
+                onChange={(event) =>
+                  setConfig((currentConfig) => ({
+                    ...currentConfig,
+                    custom_agent_command: event.target.value,
+                  }))
+                }
+                placeholder="e.g. aider --yes-always {{prompt}}"
+                className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm font-mono outline-none focus:border-[#d2a8ff] placeholder:text-[#484f58]"
+              />
+              <p className="text-xs text-[#8b949e] mt-1">
+                Use <code className="text-[#d2a8ff]">{"{{prompt}}"}</code> where the prompt should be inserted. If omitted, it is appended as the last argument.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between">
@@ -95,7 +125,9 @@ export function AgentConfigurationSection({
             <p className="text-xs text-[#8b949e] mt-0.5">
               {config.agent_type === "claude"
                 ? "Uses --dangerously-skip-permissions"
-                : "Uses --dangerously-bypass-approvals-and-sandbox"}
+                : config.agent_type === "codex"
+                  ? "Uses --dangerously-bypass-approvals-and-sandbox"
+                  : "Not applicable for custom agents"}
             </p>
           </div>
           <Toggle

@@ -329,6 +329,13 @@ pub struct RunConfig {
     /// local path configured, Symphony uses `git worktree add` instead of cloning.
     #[serde(default)]
     pub local_repos: HashMap<String, String>,
+    /// Custom agent command template. Used when `agent_type` is `"custom"`.
+    /// The first whitespace-separated token is the binary; the rest are arguments.
+    /// Use `{{prompt}}` as a placeholder for where the prompt should be inserted.
+    /// If no `{{prompt}}` placeholder is present, the prompt is appended as the last argument.
+    /// Example: `aider --yes-always {{prompt}}`
+    #[serde(default)]
+    pub custom_agent_command: String,
 }
 
 fn default_priority_labels() -> Vec<String> {
@@ -392,6 +399,7 @@ impl Default for RunConfig {
             stage_skip_labels: default_stage_skip_labels(),
             approval_gates: HashMap::new(),
             local_repos: HashMap::new(),
+            custom_agent_command: String::new(),
         }
     }
 }
