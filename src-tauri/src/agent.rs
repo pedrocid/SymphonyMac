@@ -445,55 +445,86 @@ pub async fn advance_to_stage(
 ) -> Result<String, String> {
     let target = parse_stage(&target_stage, false)?;
 
-    let (repo, issue_number, issue_title, workspace_path, issue_labels, previous_context) = {
+    let (
+        repo,
+        issue_number,
+        issue_title,
+        current_stage,
+        current_status,
+        workspace_path,
+        issue_labels,
+        previous_context,
+        max_retries,
+        auto_pilot_running,
+    ) = {
         let s = state.lock().await;
         let run = s.runs.get(&run_id).ok_or("Run not found")?;
-        match run.status {
-            AgentStatus::Completed
-            | AgentStatus::AwaitingApproval
-            | AgentStatus::Failed
-            | AgentStatus::Stopped
-            | AgentStatus::Interrupted => {}
-            _ => {
-                return Err(format!(
-                    "Cannot advance run {} with status {:?}",
-                    run_id, run.status
-                ));
-            }
-        }
-        if run.stage == PipelineStage::Done {
-            return Err("Cannot advance a completed pipeline".to_string());
-        }
         (
             run.repo.clone(),
             run.issue_number,
             run.issue_title.clone(),
+            run.stage.clone(),
+            run.status.clone(),
             run.workspace_path.clone(),
             run.issue_labels.clone(),
             run.stage_context.clone(),
+            s.config.max_retries,
+            s.is_running,
         )
     };
 
-    // Mark current run as completed before advancing
-    let _ = runtime::transition_run(
-        &app,
-        state.inner(),
-        &run_id,
-        StatusTransition {
-            status: AgentStatus::Completed,
-            stage_label: "advanced".to_string(),
-            error: None,
-            finished: true,
-            log_message: Some(format!(
-                "[manual] Advanced to {} by user",
-                target_stage
-            )),
-            pending_next_stage: PendingNextStageUpdate::Clear,
-            emit_extra: Map::new(),
-            persist_meta: true,
-        },
-    )
-    .await;
+    if auto_pilot_running {
+        return Err("Can only manually advance when auto-pilot is off".to_string());
+    }
+
+    match current_status {
+        AgentStatus::Completed | AgentStatus::AwaitingApproval => {}
+        _ => {
+            return Err(format!(
+                "Cannot manually advance run {} with status {:?}",
+                run_id, current_status
+            ));
+        }
+    }
+
+    if current_stage == PipelineStage::Done {
+        return Err("Cannot advance a completed pipeline".to_string());
+    }
+
+    if !can_advance_to_stage(&current_stage, &target) {
+        return Err(format!(
+            "Can only advance to a later stage (current: {}, requested: {})",
+            current_stage, target_stage
+        ));
+    }
+
+    if current_status == AgentStatus::AwaitingApproval {
+        let _ = runtime::transition_run(
+            &app,
+            state.inner(),
+            &run_id,
+            StatusTransition {
+                status: AgentStatus::Completed,
+                stage_label: "advanced".to_string(),
+                error: None,
+                finished: false,
+                log_message: Some(format!("[manual] Advanced to {} by user", target_stage)),
+                pending_next_stage: PendingNextStageUpdate::Clear,
+                emit_extra: Map::new(),
+                persist_meta: true,
+            },
+        )
+        .await;
+    } else {
+        runtime::append_run_log(
+            state.inner(),
+            &run_id,
+            format!("[manual] Advanced to {} by user", target_stage),
+            true,
+            false,
+        )
+        .await;
+    }
 
     let workspace_exists = workspace::workspace_exists(&repo, issue_number);
     let effective_stage = if workspace_exists {
@@ -518,17 +549,25 @@ pub async fn advance_to_stage(
         Err(_) => String::new(),
     };
 
-    launch_agent(
+    spawn_next_stage(
         app,
         state.inner().clone(),
-        repo,
-        issue_number,
-        issue_title,
-        body,
-        effective_stage,
-        issue_labels,
-    )
-    .await
+        StageLaunchSpec {
+            repo,
+            issue_number,
+            issue_title,
+            issue_body: body,
+            stage: effective_stage,
+            issue_labels,
+            workspace_path: std::path::PathBuf::from(workspace_path),
+            attempt: 1,
+            max_retries,
+            previous_error: String::new(),
+            previous_context,
+        },
+    );
+
+    Ok(run_id)
 }
 
 fn parse_stage(stage_name: &str, allow_done: bool) -> Result<PipelineStage, String> {
@@ -539,5 +578,44 @@ fn parse_stage(stage_name: &str, allow_done: bool) -> Result<PipelineStage, Stri
         "merge" => Ok(PipelineStage::Merge),
         "done" if allow_done => Ok(PipelineStage::Done),
         _ => Err(format!("Invalid stage: {}", stage_name)),
+    }
+}
+
+fn can_advance_to_stage(current: &PipelineStage, target: &PipelineStage) -> bool {
+    stage_rank(target) > stage_rank(current)
+}
+
+fn stage_rank(stage: &PipelineStage) -> u8 {
+    match stage {
+        PipelineStage::Implement => 0,
+        PipelineStage::CodeReview => 1,
+        PipelineStage::Testing => 2,
+        PipelineStage::Merge => 3,
+        PipelineStage::Done => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{can_advance_to_stage, PipelineStage};
+
+    #[test]
+    fn manual_advance_requires_a_later_stage() {
+        assert!(can_advance_to_stage(
+            &PipelineStage::Implement,
+            &PipelineStage::CodeReview
+        ));
+        assert!(can_advance_to_stage(
+            &PipelineStage::CodeReview,
+            &PipelineStage::Merge
+        ));
+        assert!(!can_advance_to_stage(
+            &PipelineStage::Testing,
+            &PipelineStage::Testing
+        ));
+        assert!(!can_advance_to_stage(
+            &PipelineStage::Testing,
+            &PipelineStage::Implement
+        ));
     }
 }

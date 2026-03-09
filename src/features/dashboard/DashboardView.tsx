@@ -75,6 +75,7 @@ export function DashboardView({
 
       <DashboardBoard
         columns={columns}
+        manualAdvanceEnabled={!status.is_running}
         showRepoName={status.repos.length > 1}
         onViewLogs={onViewLogs}
         onViewReport={onViewReport}
