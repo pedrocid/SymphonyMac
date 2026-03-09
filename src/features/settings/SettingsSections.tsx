@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { RunConfig } from "../../lib/types";
+import { validateLocalRepo } from "../../lib/api";
 import { STAGE_KEYS, STAGE_LABELS } from "./constants";
 
 type ConfigSetter = Dispatch<SetStateAction<RunConfig>>;
@@ -487,6 +489,115 @@ export function StageSkipLabelsSection({
           >
             Add
           </button>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+export function LocalReposSection({
+  config,
+  setConfig,
+}: {
+  config: RunConfig;
+  setConfig: ConfigSetter;
+}) {
+  const [newPath, setNewPath] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  async function addLocalRepo() {
+    const trimmed = newPath.trim();
+    if (!trimmed) return;
+
+    setValidating(true);
+    setValidationError(null);
+
+    try {
+      const info = await validateLocalRepo(trimmed);
+      setConfig((currentConfig) => ({
+        ...currentConfig,
+        local_repos: { ...currentConfig.local_repos, [info.full_name]: trimmed },
+      }));
+      setNewPath("");
+    } catch (error) {
+      setValidationError(String(error));
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  const entries = Object.entries(config.local_repos || {});
+
+  return (
+    <SectionCard
+      title="Local Repositories"
+      description="Add local git repositories. Issues from these repos will use git worktrees instead of cloning, saving disk space and time."
+    >
+      <div className="space-y-3">
+        {entries.map(([repoName, repoPath]) => (
+          <div
+            key={repoName}
+            className="flex items-center gap-3 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-[#58a6ff] font-medium">{repoName}</span>
+                <span className="px-1.5 py-0.5 text-[10px] bg-[#3fb95015] border border-[#3fb950] text-[#3fb950] rounded">
+                  local
+                </span>
+              </div>
+              <p className="text-xs text-[#8b949e] mt-0.5 truncate font-mono">{repoPath}</p>
+            </div>
+            <button
+              onClick={() =>
+                setConfig((currentConfig) => {
+                  const next = { ...currentConfig.local_repos };
+                  delete next[repoName];
+                  return { ...currentConfig, local_repos: next };
+                })
+              }
+              className="text-xs text-[#f85149] hover:bg-[#f8514915] rounded px-2 py-1 transition-colors shrink-0"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+
+        {entries.length === 0 && (
+          <div className="text-sm text-[#484f58] py-2 text-center">
+            No local repositories configured
+          </div>
+        )}
+
+        <div className="space-y-2 mt-2">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="Path to local git repository (e.g., /Users/me/projects/my-repo)"
+              value={newPath}
+              onChange={(event) => {
+                setNewPath(event.target.value);
+                setValidationError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void addLocalRepo();
+                }
+              }}
+              className="flex-1 px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-md text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] placeholder-[#484f58] font-mono"
+            />
+            <button
+              onClick={() => void addLocalRepo()}
+              disabled={validating || !newPath.trim()}
+              className="px-3 py-2 bg-[#21262d] text-[#8b949e] border border-[#30363d] rounded-md text-sm hover:bg-[#30363d] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {validating ? "Validating..." : "Add"}
+            </button>
+          </div>
+          {validationError && (
+            <p className="text-xs text-[#f85149]">{validationError}</p>
+          )}
         </div>
       </div>
     </SectionCard>
