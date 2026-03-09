@@ -113,7 +113,15 @@ stage_skip_labels: { [key in string]: Array<string> },
  * advancing to the next stage. Keys are stage names (implement, code_review,
  * testing, merge). Default: all false (fully automatic).
  */
-approval_gates: { [key in string]: boolean }, };
+approval_gates: { [key in string]: boolean }, 
+/**
+ * Custom agent command template. Used when `agent_type` is `"custom"`.
+ * The first whitespace-separated token is the binary; the rest are arguments.
+ * Use `{{prompt}}` as a placeholder for where the prompt should be inserted.
+ * If no `{{prompt}}` placeholder is present, the prompt is appended as the last argument.
+ * Example: `aider --yes-always {{prompt}}`
+ */
+custom_agent_command: string, };
 
 export type RunSummary = { id: string, repo: string, issue_number: number, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, workspace_path: string, error: string | null, attempt: number, max_retries: number, command_display: string | null, agent_type: string, last_log_line: string | null, log_count: number, activity: string | null, last_log_timestamp: string | null, skipped_stages: Array<string>, pending_next_stage: string | null, };
 
