@@ -45,7 +45,9 @@ pub async fn launch_agent(
         let s = state.lock().await;
         s.config.clone()
     };
-    let workspace_path = workspace::ensure_workspace(&repo, issue_number, &config.hooks)?;
+    let local_repo_path = config.local_repos.get(&repo).map(|s| s.as_str());
+    let workspace_path =
+        workspace::ensure_workspace(&repo, issue_number, local_repo_path, &config.hooks)?;
 
     let request = prepare_and_register_stage_run(
         &app,

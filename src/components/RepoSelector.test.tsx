@@ -77,4 +77,31 @@ describe("RepoSelector", () => {
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
+
+  it("shows configured local repositories without blocking GitHub repo loading", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "list_repos") {
+        return REPOS;
+      }
+
+      if (command === "get_status") {
+        return {
+          config: {
+            local_repos: {
+              "pedrocid/SymphonyMac": "/Users/pedrocid/Programming/utilities/SymphonyMac",
+            },
+          },
+        };
+      }
+
+      throw new Error(`Unexpected invoke: ${command}`);
+    });
+
+    render(<Harness onConfirm={vi.fn()} />);
+
+    expect(await screen.findByText("Local (worktree)")).toBeInTheDocument();
+    expect(
+      screen.getByText("/Users/pedrocid/Programming/utilities/SymphonyMac"),
+    ).toBeInTheDocument();
+  });
 });

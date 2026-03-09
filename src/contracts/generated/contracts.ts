@@ -115,6 +115,12 @@ stage_skip_labels: { [key in string]: Array<string> },
  */
 approval_gates: { [key in string]: boolean }, 
 /**
+ * Local repository paths. Keys are repo full names (e.g. "owner/repo"),
+ * values are absolute paths to local git repositories. When a repo has a
+ * local path configured, Symphony uses `git worktree add` instead of cloning.
+ */
+local_repos: { [key in string]: string }, 
+/**
  * Custom agent command template. Used when `agent_type` is `"custom"`.
  * The first whitespace-separated token is the binary; the rest are arguments.
  * Use `{{prompt}}` as a placeholder for where the prompt should be inserted.
@@ -161,4 +167,4 @@ summary: string, };
 
 export type StageReport = { name: string, status: string, duration_secs: number | null, duration_display: string, files_modified: Array<string>, lines_added: number, lines_removed: number, commands_executed: Array<string>, summary: string, attempt: number, };
 
-export type WorkspaceInfo = { name: string, path: string, size_bytes: number, size_display: string, modified_at: string, age_days: number, };
+export type WorkspaceInfo = { name: string, path: string, size_bytes: number, size_display: string, modified_at: string, age_days: number, is_worktree: boolean, };

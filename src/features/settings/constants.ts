@@ -42,5 +42,6 @@ export const DEFAULT_RUN_CONFIG: RunConfig = {
     "docs-only": ["code_review", "testing"],
   },
   approval_gates: {},
+  local_repos: {},
   custom_agent_command: "",
 };

@@ -324,6 +324,11 @@ pub struct RunConfig {
     /// testing, merge). Default: all false (fully automatic).
     #[serde(default)]
     pub approval_gates: HashMap<String, bool>,
+    /// Local repository paths. Keys are repo full names (e.g. "owner/repo"),
+    /// values are absolute paths to local git repositories. When a repo has a
+    /// local path configured, Symphony uses `git worktree add` instead of cloning.
+    #[serde(default)]
+    pub local_repos: HashMap<String, String>,
     /// Custom agent command template. Used when `agent_type` is `"custom"`.
     /// The first whitespace-separated token is the binary; the rest are arguments.
     /// Use `{{prompt}}` as a placeholder for where the prompt should be inserted.
@@ -393,6 +398,7 @@ impl Default for RunConfig {
             stall_timeout_secs: default_stall_timeout(),
             stage_skip_labels: default_stage_skip_labels(),
             approval_gates: HashMap::new(),
+            local_repos: HashMap::new(),
             custom_agent_command: String::new(),
         }
     }
