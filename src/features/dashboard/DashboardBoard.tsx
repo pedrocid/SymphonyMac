@@ -7,8 +7,25 @@ const STAGE_LABELS: Record<string, string> = {
   merge: "Merging",
 };
 
+const STAGE_ORDER = ["implement", "code_review", "testing", "merge"];
+
+const STAGE_DISPLAY: Record<string, string> = {
+  implement: "Implement",
+  code_review: "Review",
+  testing: "Testing",
+  merge: "Merge",
+};
+
+function getAdvanceableStages(currentStage: string | undefined): string[] {
+  if (!currentStage) return STAGE_ORDER;
+  const idx = STAGE_ORDER.indexOf(currentStage);
+  if (idx < 0) return [];
+  return STAGE_ORDER.slice(idx + 1);
+}
+
 interface DashboardBoardProps {
   columns: DashboardColumn[];
+  manualAdvanceEnabled: boolean;
   showRepoName: boolean;
   onViewLogs: (runId: string) => void;
   onViewReport?: (runId: string) => void;
@@ -18,10 +35,12 @@ interface DashboardBoardProps {
   onRetryAgentFromStage: (runId: string, fromStage: string) => void;
   onApproveStage: (runId: string) => void;
   onRejectStage: (runId: string) => void;
+  onAdvanceToStage: (runId: string, targetStage: string) => void;
 }
 
 export function DashboardBoard({
   columns,
+  manualAdvanceEnabled,
   showRepoName,
   onViewLogs,
   onViewReport,
@@ -31,6 +50,7 @@ export function DashboardBoard({
   onRetryAgentFromStage,
   onApproveStage,
   onRejectStage,
+  onAdvanceToStage,
 }: DashboardBoardProps) {
   return (
     <div className="flex-1 overflow-x-auto overflow-y-hidden p-6">
@@ -52,6 +72,7 @@ export function DashboardBoard({
                   card={card}
                   columnId={column.id}
                   color={column.color}
+                  manualAdvanceEnabled={manualAdvanceEnabled}
                   showRepoName={showRepoName}
                   onViewLogs={onViewLogs}
                   onViewReport={onViewReport}
@@ -61,6 +82,7 @@ export function DashboardBoard({
                   onRetryAgentFromStage={onRetryAgentFromStage}
                   onApproveStage={onApproveStage}
                   onRejectStage={onRejectStage}
+                  onAdvanceToStage={onAdvanceToStage}
                 />
               ))}
 
@@ -75,10 +97,15 @@ export function DashboardBoard({
   );
 }
 
-interface DashboardCardProps extends Omit<DashboardBoardProps, "columns" | "showRepoName"> {
+interface DashboardCardProps
+  extends Omit<
+    DashboardBoardProps,
+    "columns" | "manualAdvanceEnabled" | "showRepoName"
+  > {
   card: KanbanCard;
   color: string;
   columnId: string;
+  manualAdvanceEnabled: boolean;
   showRepoName: boolean;
 }
 
@@ -86,6 +113,7 @@ function DashboardCard({
   card,
   color,
   columnId,
+  manualAdvanceEnabled,
   showRepoName,
   onViewLogs,
   onViewReport,
@@ -95,7 +123,18 @@ function DashboardCard({
   onRetryAgentFromStage,
   onApproveStage,
   onRejectStage,
+  onAdvanceToStage,
 }: DashboardCardProps) {
+  const canAdvanceManually =
+    manualAdvanceEnabled &&
+    !!card.runId &&
+    !!card.runStage &&
+    card.runStage !== "done" &&
+    (card.runStatus === "waiting" || card.runStatus === "awaiting_approval");
+  const advanceableStages = canAdvanceManually
+    ? getAdvanceableStages(card.runStage)
+    : [];
+
   return (
     <div
       className="bg-[#161b22] border border-[#30363d] rounded-lg p-3 hover:border-[#484f58] transition-colors cursor-pointer group"
@@ -132,8 +171,14 @@ function DashboardCard({
 
       {card.runStatus === "waiting" && (
         <div className="flex items-center gap-1.5 mb-2">
-          <span className="w-1.5 h-1.5 bg-[#484f58] rounded-full animate-pulse" />
-          <span className="text-xs text-[#484f58]">Starting next stage...</span>
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              manualAdvanceEnabled ? "bg-[#58a6ff]" : "bg-[#484f58] animate-pulse"
+            }`}
+          />
+          <span className={`text-xs ${manualAdvanceEnabled ? "text-[#58a6ff]" : "text-[#484f58]"}`}>
+            {manualAdvanceEnabled ? "Ready for manual advance" : "Starting next stage..."}
+          </span>
         </div>
       )}
 
@@ -170,6 +215,29 @@ function DashboardCard({
             >
               Reject
             </button>
+          </div>
+        </div>
+      )}
+
+      {advanceableStages.length > 0 && (
+        <div className="mb-2">
+          <div className="flex items-center gap-1.5 mb-2">
+            <span className="w-1.5 h-1.5 bg-[#58a6ff] rounded-full" />
+            <span className="text-xs text-[#58a6ff]">Advance manually</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {advanceableStages.map((stage) => (
+              <button
+                key={stage}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onAdvanceToStage(card.runId!, stage);
+                }}
+                className="px-2 py-0.5 text-xs font-medium bg-[#58a6ff15] text-[#58a6ff] border border-[#58a6ff] rounded-md hover:bg-[#58a6ff30] transition-colors"
+              >
+                {STAGE_DISPLAY[stage] || stage}
+              </button>
+            ))}
           </div>
         </div>
       )}

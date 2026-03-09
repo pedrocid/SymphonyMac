@@ -15,6 +15,7 @@ interface DashboardViewProps {
   onRetryAgentFromStage: (runId: string, fromStage: string) => void;
   onApproveStage: (runId: string) => void;
   onRejectStage: (runId: string) => void;
+  onAdvanceToStage: (runId: string, targetStage: string) => void;
   onLaunchIssueByKey: (issueKey: string) => void;
 }
 
@@ -30,6 +31,7 @@ export function DashboardView({
   onRetryAgentFromStage,
   onApproveStage,
   onRejectStage,
+  onAdvanceToStage,
   onLaunchIssueByKey,
 }: DashboardViewProps) {
   const title = status.repos.length > 0 ? status.repos.join(", ") : "Symphony";
@@ -73,6 +75,7 @@ export function DashboardView({
 
       <DashboardBoard
         columns={columns}
+        manualAdvanceEnabled={!status.is_running}
         showRepoName={status.repos.length > 1}
         onViewLogs={onViewLogs}
         onViewReport={onViewReport}
@@ -82,6 +85,7 @@ export function DashboardView({
         onRetryAgentFromStage={onRetryAgentFromStage}
         onApproveStage={onApproveStage}
         onRejectStage={onRejectStage}
+        onAdvanceToStage={onAdvanceToStage}
       />
     </div>
   );
