@@ -78,6 +78,8 @@ before_remove: string | null,
  */
 timeout_secs: bigint, };
 
+export type LocalRepoInfo = { path: string, full_name: string, };
+
 export type OrchestratorOverview = { is_running: boolean, repos: Array<string>, runs: Array<RunSummary>, config: RunConfig, total_completed: number, total_failed: number, active_count: number, total_input_tokens: bigint, total_output_tokens: bigint, total_cost_usd: number, total_runtime_secs: number, };
 
 export type PipelineReport = { issue_number: bigint, issue_title: string, repo: string, total_duration_secs: bigint, total_duration_display: string, stages: Array<StageReport>, pr_number: bigint | null, pr_url: string | null, issue_url: string, code_review_summary: string, testing_summary: string, total_input_tokens: bigint, total_output_tokens: bigint, total_cost_usd: number, };
@@ -113,7 +115,21 @@ stage_skip_labels: { [key in string]: Array<string> },
  * advancing to the next stage. Keys are stage names (implement, code_review,
  * testing, merge). Default: all false (fully automatic).
  */
-approval_gates: { [key in string]: boolean }, };
+approval_gates: { [key in string]: boolean }, 
+/**
+ * Local repository paths. Keys are repo full names (e.g. "owner/repo"),
+ * values are absolute paths to local git repositories. When a repo has a
+ * local path configured, Symphony uses `git worktree add` instead of cloning.
+ */
+local_repos: { [key in string]: string }, 
+/**
+ * Custom agent command template. Used when `agent_type` is `"custom"`.
+ * The first whitespace-separated token is the binary; the rest are arguments.
+ * Use `{{prompt}}` as a placeholder for where the prompt should be inserted.
+ * If no `{{prompt}}` placeholder is present, the prompt is appended as the last argument.
+ * Example: `aider --yes-always {{prompt}}`
+ */
+custom_agent_command: string, };
 
 export type RunSummary = { id: string, repo: string, issue_number: bigint, issue_title: string, status: AgentStatus, stage: PipelineStage, started_at: string, finished_at: string | null, workspace_path: string, error: string | null, attempt: number, max_retries: number, command_display: string | null, agent_type: string, last_log_line: string | null, log_count: number, activity: string | null, last_log_timestamp: string | null, skipped_stages: Array<string>, pending_next_stage: string | null, };
 
@@ -153,4 +169,4 @@ summary: string, };
 
 export type StageReport = { name: string, status: string, duration_secs: bigint | null, duration_display: string, files_modified: Array<string>, lines_added: number, lines_removed: number, commands_executed: Array<string>, summary: string, attempt: number, };
 
-export type WorkspaceInfo = { name: string, path: string, size_bytes: bigint, size_display: string, modified_at: string, age_days: number, };
+export type WorkspaceInfo = { name: string, path: string, size_bytes: bigint, size_display: string, modified_at: string, age_days: number, is_worktree: boolean, };

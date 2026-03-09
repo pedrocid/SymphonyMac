@@ -29,6 +29,8 @@ export interface RunConfig {
   stall_timeout_secs: number;
   stage_skip_labels: Record<string, string[]>;
   approval_gates: Record<string, boolean>;
+  local_repos: Record<string, string>;
+  custom_agent_command: string;
 }
 
 export interface AgentRun {
@@ -99,6 +101,12 @@ export interface WorkspaceInfo {
   size_display: string;
   modified_at: string;
   age_days: number;
+  is_worktree: boolean;
+}
+
+export interface LocalRepoInfo {
+  path: string;
+  full_name: string;
 }
 
 export interface BlockedIssueEntry {

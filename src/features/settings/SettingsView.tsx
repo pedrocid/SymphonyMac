@@ -4,6 +4,7 @@ import {
   AgentConfigurationSection,
   ApprovalGatesSection,
   LifecycleHooksSection,
+  LocalReposSection,
   NotificationsSection,
   OrchestratorSection,
   PriorityLabelsSection,
@@ -131,6 +132,7 @@ export function SettingsView({
 
             {activeTab === "workspaces" && (
               <>
+                <LocalReposSection config={config} setConfig={setConfig} />
                 <WorkspaceCleanupSection config={config} setConfig={setConfig} />
                 <WorkspacesSection
                   workspaces={workspaces}

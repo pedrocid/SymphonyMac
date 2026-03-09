@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import type { RunConfig } from "../../lib/types";
+import { validateLocalRepo } from "../../lib/api";
 import { STAGE_KEYS, STAGE_LABELS } from "./constants";
 
 type ConfigSetter = Dispatch<SetStateAction<RunConfig>>;
@@ -202,7 +204,37 @@ export function AgentConfigurationSection({
             >
               Codex
             </button>
+            <button
+              onClick={() => setConfig((currentConfig) => ({ ...currentConfig, agent_type: "custom" }))}
+              className={`flex-1 p-3 rounded-lg border text-sm font-medium transition-all ${
+                config.agent_type === "custom"
+                  ? "bg-[#d2a8ff10] border-[#d2a8ff] text-[#d2a8ff] shadow-[0_0_0_1px_#d2a8ff33]"
+                  : "bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58] hover:text-[#e6edf3]"
+              }`}
+            >
+              Custom
+            </button>
           </div>
+          {config.agent_type === "custom" && (
+            <div className="mt-3">
+              <label className="block text-sm text-[#8b949e] mb-1">Command template</label>
+              <input
+                type="text"
+                value={config.custom_agent_command}
+                onChange={(event) =>
+                  setConfig((currentConfig) => ({
+                    ...currentConfig,
+                    custom_agent_command: event.target.value,
+                  }))
+                }
+                placeholder="e.g. aider --yes-always {{prompt}}"
+                className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-[#e6edf3] text-sm font-mono outline-none focus:border-[#d2a8ff] focus:ring-1 focus:ring-[#d2a8ff33] placeholder:text-[#484f58] transition-colors"
+              />
+              <p className="text-xs text-[#8b949e] mt-1">
+                Use <code className="text-[#d2a8ff]">{"{{prompt}}"}</code> where the prompt should be inserted. If omitted, it is appended as the last argument.
+              </p>
+            </div>
+          )}
         </div>
 
         <ToggleRow
@@ -210,9 +242,12 @@ export function AgentConfigurationSection({
           description={
             config.agent_type === "claude"
               ? "Uses --dangerously-skip-permissions"
-              : "Uses --dangerously-bypass-approvals-and-sandbox"
+              : config.agent_type === "codex"
+                ? "Uses --dangerously-bypass-approvals-and-sandbox"
+                : "Not applicable for custom agents"
           }
           enabled={config.auto_approve}
+          disabled={config.agent_type === "custom"}
           onToggle={() => setConfig((c) => ({ ...c, auto_approve: !c.auto_approve }))}
         />
 
@@ -540,6 +575,116 @@ export function StageSkipLabelsSection({
           >
             Add
           </button>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+export function LocalReposSection({
+  config,
+  setConfig,
+}: {
+  config: RunConfig;
+  setConfig: ConfigSetter;
+}) {
+  const [newPath, setNewPath] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  async function addLocalRepo() {
+    const trimmed = newPath.trim();
+    if (!trimmed) return;
+
+    setValidating(true);
+    setValidationError(null);
+
+    try {
+      const info = await validateLocalRepo(trimmed);
+      setConfig((currentConfig) => ({
+        ...currentConfig,
+        local_repos: { ...currentConfig.local_repos, [info.full_name]: trimmed },
+      }));
+      setNewPath("");
+    } catch (error) {
+      setValidationError(String(error));
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  const entries = Object.entries(config.local_repos || {});
+
+  return (
+    <SectionCard
+      title="Local Repositories"
+      description="Add local git repositories. Issues from these repos will use git worktrees instead of cloning, saving disk space and time."
+      icon="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+    >
+      <div className="space-y-3">
+        {entries.map(([repoName, repoPath]) => (
+          <div
+            key={repoName}
+            className="flex items-center gap-3 bg-[#0d1117] border border-[#21262d] rounded-lg px-3 py-2.5"
+          >
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-[#58a6ff] font-medium">{repoName}</span>
+                <span className="px-1.5 py-0.5 text-[10px] bg-[#3fb95015] border border-[#3fb950] text-[#3fb950] rounded-full">
+                  local
+                </span>
+              </div>
+              <p className="text-xs text-[#8b949e] mt-0.5 truncate font-mono">{repoPath}</p>
+            </div>
+            <button
+              onClick={() =>
+                setConfig((currentConfig) => {
+                  const next = { ...currentConfig.local_repos };
+                  delete next[repoName];
+                  return { ...currentConfig, local_repos: next };
+                })
+              }
+              className="text-xs text-[#f85149] hover:bg-[#f8514910] rounded-md px-2 py-1 transition-colors shrink-0"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+
+        {entries.length === 0 && (
+          <div className="text-sm text-[#484f58] py-3 text-center rounded-lg bg-[#0d1117] border border-dashed border-[#21262d]">
+            No local repositories configured
+          </div>
+        )}
+
+        <div className="space-y-2 mt-2">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="Path to local git repository (e.g., /Users/me/projects/my-repo)"
+              value={newPath}
+              onChange={(event) => {
+                setNewPath(event.target.value);
+                setValidationError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void addLocalRepo();
+                }
+              }}
+              className="flex-1 px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded-lg text-[#e6edf3] text-sm outline-none focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff33] placeholder-[#484f58] font-mono transition-colors"
+            />
+            <button
+              onClick={() => void addLocalRepo()}
+              disabled={validating || !newPath.trim()}
+              className="px-4 py-2 bg-[#21262d] text-[#8b949e] border border-[#30363d] rounded-lg text-sm hover:bg-[#30363d] hover:text-[#e6edf3] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {validating ? "Validating..." : "Add"}
+            </button>
+          </div>
+          {validationError && (
+            <p className="text-xs text-[#f85149]">{validationError}</p>
+          )}
         </div>
       </div>
     </SectionCard>

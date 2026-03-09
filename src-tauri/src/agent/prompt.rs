@@ -229,6 +229,7 @@ pub(crate) fn build_command_args(config: &RunConfig, prompt: &str) -> (String, V
             args.push(prompt.to_string());
             (crate::paths::resolve("codex"), args)
         }
+        "custom" => build_custom_command_args(&config.custom_agent_command, prompt),
         _ => {
             let mut args = vec![
                 "--print".to_string(),
@@ -243,6 +244,50 @@ pub(crate) fn build_command_args(config: &RunConfig, prompt: &str) -> (String, V
             (crate::paths::resolve("claude"), args)
         }
     }
+}
+
+/// Parse a custom agent command template and substitute the prompt.
+///
+/// The template is tokenized with shell-like quoting rules. The first token is
+/// resolved as the binary (searching the usual PATH dirs). Remaining tokens
+/// become arguments.
+/// If any token contains `{{prompt}}`, the placeholder is replaced with the
+/// actual prompt text. If no token contains the placeholder, the prompt is
+/// appended as the final argument.
+fn build_custom_command_args(template: &str, prompt: &str) -> (String, Vec<String>) {
+    let tokens = shlex::split(template).unwrap_or_else(|| {
+        template
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect()
+    });
+    if tokens.is_empty() {
+        // Fallback to claude if the user left the command empty.
+        return (
+            crate::paths::resolve("claude"),
+            vec![
+                "--print".to_string(),
+                "--output-format".to_string(),
+                "stream-json".to_string(),
+                "--verbose".to_string(),
+                prompt.to_string(),
+            ],
+        );
+    }
+
+    let binary = crate::paths::resolve(&tokens[0]);
+    let has_placeholder = tokens[1..].iter().any(|t| t.contains("{{prompt}}"));
+
+    let mut args: Vec<String> = tokens[1..]
+        .iter()
+        .map(|t| t.replace("{{prompt}}", prompt))
+        .collect();
+
+    if !has_placeholder {
+        args.push(prompt.to_string());
+    }
+
+    (binary, args)
 }
 
 #[cfg(test)]
@@ -331,5 +376,49 @@ mod tests {
             prompt,
             "Custom test plan for pedrocid/SymphonyMac issue #62"
         );
+    }
+
+    #[test]
+    fn test_custom_command_with_placeholder() {
+        let (bin, args) =
+            super::build_custom_command_args("aider --yes-always {{prompt}}", "fix the bug");
+        assert!(bin.contains("aider"));
+        assert_eq!(args, vec!["--yes-always", "fix the bug"]);
+    }
+
+    #[test]
+    fn test_custom_command_without_placeholder() {
+        let (bin, args) =
+            super::build_custom_command_args("my-agent --flag", "do something");
+        assert!(bin.contains("my-agent"));
+        assert_eq!(args, vec!["--flag", "do something"]);
+    }
+
+    #[test]
+    fn test_custom_command_empty_falls_back_to_claude() {
+        let (bin, args) = super::build_custom_command_args("", "hello");
+        assert!(bin.contains("claude"));
+        assert!(args.contains(&"hello".to_string()));
+    }
+
+    #[test]
+    fn test_custom_command_preserves_quoted_arguments() {
+        let (bin, args) = super::build_custom_command_args(
+            "my-agent --model \"gpt-4.1 mini\" --profile 'team one'",
+            "do something",
+        );
+        assert!(bin.contains("my-agent"));
+        assert_eq!(
+            args,
+            vec!["--model", "gpt-4.1 mini", "--profile", "team one", "do something"]
+        );
+    }
+
+    #[test]
+    fn test_custom_command_replaces_placeholder_inside_quoted_argument() {
+        let (bin, args) =
+            super::build_custom_command_args("aider --message \"{{prompt}}\"", "fix the bug");
+        assert!(bin.contains("aider"));
+        assert_eq!(args, vec!["--message", "fix the bug"]);
     }
 }

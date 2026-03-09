@@ -91,7 +91,14 @@ export function WorkspacesSection({
                 className="flex items-center justify-between bg-[#0d1117] border border-[#21262d] rounded-lg px-3 py-2.5 group hover:border-[#30363d] transition-colors"
               >
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-[#e6edf3] truncate">{workspace.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm text-[#e6edf3] truncate">{workspace.name}</p>
+                    {workspace.is_worktree && (
+                      <span className="px-1.5 py-0.5 text-[10px] bg-[#3fb95015] border border-[#3fb950] text-[#3fb950] rounded-full shrink-0">
+                        worktree
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-[#484f58]">
                     {workspace.size_display} &middot; {formatWorkspaceAge(workspace.age_days)} old
                   </p>
