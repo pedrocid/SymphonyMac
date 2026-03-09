@@ -70,6 +70,7 @@ pub fn run() {
             workspace::cleanup_old_workspaces,
             workspace::cleanup_single_workspace,
             workspace::cleanup_all_workspaces,
+            workspace::validate_local_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
